@@ -108,7 +108,3 @@ Data safety is built in: atomic saves, automatic backups with restore on boot, p
 - Machine "disappeared"? Right-click its modem — the red ring must be lit.
 - A machine inside a custom group always works with its group; EXCLUDE only affects name-based pooling.
 - Keep free space in storage — collection needs somewhere to put results.
-
-## Tested on
-
-Create packs (CreateAERO, FTB Evolution), GregTech CEu / Monifactory, Modern Industrialization. Issues welcome.
