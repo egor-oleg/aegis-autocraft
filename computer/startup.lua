@@ -192,6 +192,7 @@ historyPopup       = nil
 scanActive         = false
 scanTimer          = nil
 recipeEditPopup    = nil
+altOutEdit         = nil
 mgmtItemSearch       = ""
 mgmtItemSearchActive = false
 itemToCraft = ""
@@ -7083,6 +7084,9 @@ headerColor = colors.cyan
 elseif isRequestMode then
 headerText = " REQUEST TO TRAIN BOX "
 headerColor = colors.cyan
+elseif altOutEdit then
+headerText = " OUTPUT COUNT "
+headerColor = colors.cyan
 elseif isSettingKeepLimit then
 headerText = " KEEP: THRESHOLD -> TARGET "
 headerColor = colors.orange
@@ -7096,7 +7100,9 @@ if fluidCraftMode then nameLabel = fluidCraftMode.isItem and "Item: " or "Fluid:
 if fluidKeepName then nameLabel = "Fluid: " end
 local pickName = fluidKeepName and (fluidKeepName:match("([^:]+)$") or fluidKeepName)
 or (itemToCraft:match(":(.+)$") or itemToCraft)
+if not altOutEdit then
 drawText(pX + 2, pY + 2, nameLabel .. pickName, colors.white, colors.gray)
+end
 local exactStock = isRequestMode and requestMaxQty or (stockInv and (stockInv[itemToCraft] or 0) or 0)
 local curStock      = exactStock
 local stockColor    = colors.cyan
@@ -7143,6 +7149,9 @@ table.insert(touchZones, 1, {id="keep_field", arg="threshold", x1=pX+2, x2=pX+2+
 local tgtX = pX + 2 + #thrStr + 2
 drawText(tgtX, pY + 3, tgtStr, tgtSel and colors.black or colors.white, tgtSel and colors.lime or colors.gray)
 table.insert(touchZones, 1, {id="keep_field", arg="target", x1=tgtX, x2=tgtX+#tgtStr-1, y=pY+3})
+elseif altOutEdit then
+local aoPart = "Output per craft: " .. craftQuantity
+drawText(pX + math.floor((pW - #aoPart) / 2), pY + 2, aoPart, colors.lime, colors.gray)
 else
 local amtPart = "Amount: " .. craftQuantity .. unitSuf
 local stPart  = "  Stock: " .. curStock .. unitSuf
@@ -7195,7 +7204,7 @@ drawText(qX, addRow, str, colors.white, colors.gray)
 table.insert(touchZones, 1, {id="qty_adj", arg=val, x1=qX, x2=qX+#str-1, y=addRow})
 qX = qX + #str + 1
 end
-if not isSettingKeepLimit then
+if not isSettingKeepLimit and not altOutEdit then
 drawText(rightBtnX, addRow, maxStr, colors.black, colors.lime)
 table.insert(touchZones, 1, {id="qty_max", x1=rightBtnX, x2=rightBtnX+#maxStr-1, y=addRow})
 end
@@ -7226,7 +7235,7 @@ drawText(pX + 2,                btnRow, cfmStr, colors.black, colors.lime)
 drawText(pX + pW - #cnlStr - 2, btnRow, cnlStr, colors.white, colors.gray)
 table.insert(touchZones, 1, {id="qty_confirm", x1=pX+2,                x2=pX+2+#cfmStr-1,            y=btnRow})
 table.insert(touchZones, 1, {id="qty_cancel",  x1=pX+pW-#cnlStr-2,    x2=pX+pW-2,                   y=btnRow})
-if not isRequestMode and not isSettingKeepLimit and not fluidKeepName and not queueEditIdx then
+if not isRequestMode and not isSettingKeepLimit and not fluidKeepName and not queueEditIdx and not altOutEdit then
 local aqStr = " [+QUEUE] "
 local aqX = pX + 2 + #cfmStr + 1
 drawText(aqX, btnRow, aqStr, colors.black, colors.cyan)
@@ -7458,8 +7467,7 @@ local fkAlt = isFluidAlt and fluidKey(altViewFluid) or nil
 local titleName = isFluidAlt and (altViewFluid:match(":(.+)$") or altViewFluid)
 or (altViewItem and (altViewItem:match(":(.+)$") or altViewItem) or "?")
 drawText(2, 9, "RECIPE PRIORITY: " .. titleName, colors.lime)
-drawText(2, 10, "Top = tried first. Recursion falls back down the list.", colors.gray)
-drawText(1, 11, string.rep("-", w), colors.gray)
+drawText(1, 10, string.rep("-", w), colors.gray)
 local primary, alts
 if isFluidAlt then
 primary = FluidRecipes[fkAlt]
@@ -7494,8 +7502,14 @@ for _, fAlts in pairs(FluidAltRecipes) do
 for _, rec in ipairs(fAlts) do addFl(rec) end
 end
 end
-local listY = 12
-local perPage = h - listY - 4
+local listY = 11
+local perPage = h - listY - 3
+local col1X = 2
+local col1W = 24
+local col2X = col1X + col1W
+local col2W = 4
+local col3X = col2X + col2W + 2
+local col3End = w - 24
 if #entries == 0 then
 drawText(2, listY, "No recipes. Add one via +RECIPES tab.", colors.gray)
 else
@@ -7506,18 +7520,17 @@ _bufClearLine(listY, rowBg)
 local rec   = entry.recipe
 local mName = tostring(rec.machine_name or rec.method or "?")
 mName = mName:match(":(.+)$") or mName
-local rankLabel
-if entry.isFluid then
-rankLabel = "[FLUID]  "
-elseif entry.isPrimary then
-rankLabel = "[PRIMARY]"
-else
-rankLabel = "[#" .. eIdx .. "]      "
-rankLabel = rankLabel:sub(1, 9)
-end
 local nameColor = entry.isFluid and colors.cyan or (entry.isPrimary and colors.yellow or colors.white)
-local label, ingStr
+local outVal, ingStr
 if isFluidAlt or entry.isFluid then
+local tName = isFluidAlt and altViewFluid or altViewItem
+outVal = 0
+for _, o in ipairs(rec.outputs or {}) do
+if o.name == tName then outVal = o.amount end
+end
+for _, o in ipairs(rec.item_outputs or {}) do
+if o.name == tName then outVal = o.count end
+end
 local inParts = {}
 for _, inp in ipairs(rec.inputs or {}) do
 inParts[#inParts + 1] = (inp.name:match(":(.+)$") or inp.name) .. " " .. inp.amount
@@ -7525,21 +7538,9 @@ end
 for _, it in ipairs(rec.item_inputs or {}) do
 inParts[#inParts + 1] = it.count .. "x " .. (it.name:match(":(.+)$") or it.name)
 end
-local outParts = {}
-for _, o in ipairs(rec.outputs or {}) do
-outParts[#outParts + 1] = (o.name:match(":(.+)$") or o.name) .. " " .. o.amount
-end
-for _, o in ipairs(rec.item_outputs or {}) do
-outParts[#outParts + 1] = o.count .. "x " .. (o.name:match(":(.+)$") or o.name)
-end
-label = rankLabel .. " " .. mName
-ingStr = table.concat(inParts, " + ") .. " -> " .. table.concat(outParts, " + ")
+ingStr = table.concat(inParts, " + ")
 else
-local ingCount = 0
-for _, ing in ipairs(rec.ingredients or {}) do
-if ing and ing ~= "nil" then ingCount = ingCount + 1 end
-end
-label = rankLabel .. " " .. mName .. " x" .. (rec.output_count or 1) .. " (" .. ingCount .. " ing)"
+outVal = rec.output_count or 1
 local ingSlotCounts = {}
 for _, ing in ipairs(rec.ingredients or {}) do
 if ing and ing ~= "nil" then
@@ -7554,12 +7555,17 @@ end
 table.sort(ingParts)
 ingStr = table.concat(ingParts, "  ")
 end
-drawText(2, listY, label:sub(1, w - 25), nameColor, rowBg)
-local labelLen  = math.min(#label, w - 25)
-local ingStartX = 2 + labelLen + 2
-local ingEndX   = w - 24
-if ingEndX - ingStartX > 4 and #ingStr > 0 then
-drawText(ingStartX, listY, ingStr:sub(1, ingEndX - ingStartX), colors.lightGray, rowBg)
+local nameStr = eIdx .. " " .. mName
+drawText(col1X, listY, nameStr:sub(1, col1W - 1), nameColor, rowBg)
+local outStr = tostring(outVal):sub(1, col2W)
+local outX = col2X + col2W - #outStr
+drawText(outX, listY, outStr, colors.lime, rowBg)
+table.insert(touchZones, {id="alt_out_edit", recRef=rec,
+targetName=(isFluidAlt and altViewFluid or altViewItem),
+fluidRow=(isFluidAlt or entry.isFluid) and true or false,
+curVal=outVal, x1=col2X, x2=col2X+col2W-1, y=listY})
+if col3End - col3X > 4 and #ingStr > 0 then
+drawText(col3X, listY, ingStr:sub(1, col3End - col3X), colors.lightGray, rowBg)
 end
 local bx = w - 22
 if not entry.isFluid then
@@ -7588,17 +7594,15 @@ end
 listY = listY + 1
 end
 end
-local btnY = h - 2
+local btnY = h - 1
 if isFluidAlt then
 drawText(2, btnY, "[ BACK ]", colors.white, colors.gray)
 table.insert(touchZones, {id="alt_back", x1=2, x2=9, y=btnY})
-drawText(2, h-1, "PRIMARY yellow. Add alts via +RECIPES learning.", colors.gray)
 else
 drawText(2, btnY, "[ + ADD ALT ]", colors.black, colors.lime)
 table.insert(touchZones, {id="alt_add", x1=2, x2=14, y=btnY})
 drawText(17, btnY, "[ BACK ]", colors.white, colors.gray)
 table.insert(touchZones, {id="alt_back", x1=17, x2=24, y=btnY})
-drawText(2, h-1, "PRIMARY shown in yellow. [X] only for alt recipes.", colors.gray)
 end
 end
 function _diB13(w, h, touchZones)
@@ -9142,6 +9146,7 @@ local isQtyZone = zone.id == "qty_adj" or zone.id == "qty_confirm" or zone.id ==
 if not isQtyZone then
 isRequestMode = false
 isSettingKeepLimit = false
+altOutEdit = nil
 if queueEditIdx then queueEditIdx = nil; craftQueuePopup = true end
 currentTab = qtyOriginTab or "RECIPES"
 break
@@ -9462,7 +9467,19 @@ elseif zone.id == "open_alt_view" then
 altViewItem = zone.arg
 altViewFluid = nil
 currentTab = "ALT_VIEW"
+elseif zone.id == "alt_out_edit" then
+altOutEdit = {rec = zone.recRef, targetName = zone.targetName,
+fluidRow = zone.fluidRow}
+isSettingKeepLimit = false
+isRequestMode = false
+fluidCraftMode = nil
+fluidKeepName = nil
+queueEditIdx = nil
+craftQuantity = math.max(1, zone.curVal or 1)
+qtyOriginTab = "ALT_VIEW"
+currentTab = "QUANTITY_PICKER"
 elseif zone.id == "alt_back" then
+altOutEdit = nil
 currentTab = "RECIPES"
 if altViewFluid then currentModFilter = "FLUID" end
 altViewFluid = nil
@@ -10213,6 +10230,7 @@ isRequestMode = false
 isSettingKeepLimit = false
 fluidCraftMode = nil
 fluidKeepName = nil
+altOutEdit = nil
 if queueEditIdx then queueEditIdx = nil; craftQueuePopup = true end
 currentTab = qtyOriginTab or "RECIPES"
 elseif zone.id == "qty_add_queue" then
@@ -10396,7 +10414,26 @@ selectedOutputDevice = nil
 if zone.arg ~= "turtle" then craftSubTab = "MACHINES" end
 end
 elseif zone.id == "qty_confirm" then
-if queueEditIdx then
+if altOutEdit then
+local aRec = altOutEdit.rec
+local aVal = math.max(1, craftQuantity)
+if aRec then
+if altOutEdit.fluidRow then
+for _, o in ipairs(aRec.outputs or {}) do
+if o.name == altOutEdit.targetName then o.amount = aVal end
+end
+for _, o in ipairs(aRec.item_outputs or {}) do
+if o.name == altOutEdit.targetName then o.count = aVal end
+end
+syncFluidItemStubs()
+else
+aRec.output_count = aVal
+end
+saveData()
+end
+altOutEdit = nil
+currentTab = "ALT_VIEW"
+elseif queueEditIdx then
 local qe = craftQueue[queueEditIdx]
 if qe and craftQuantity > 0 then
 qe.qty = craftQuantity
