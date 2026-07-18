@@ -98,13 +98,3 @@ Result screen: `-> NEW` new recipe, `-> +ALT` added as alternative, red `DUB` �
 | STOCK / History | Storage view with filters; one-tap repeat of recent crafts |
 | ntfy push | Phone notification on completion/failure; `/status`, `/queue`, `/cancel` from the phone |
 | GitHub sync | Export/import the recipe library. Setup: create a private repo, generate a token, enter the repo and token in the GIT tab — after that import/export becomes available |
-
-Data safety is built in: atomic saves, automatic backups with restore on boot, protection against config wipes.
-
----
-
-## Tips
-
-- Machine "disappeared"? Right-click its modem — the red ring must be lit.
-- A machine inside a custom group always works with its group; EXCLUDE only affects name-based pooling.
-- Keep free space in storage — collection needs somewhere to put results.
