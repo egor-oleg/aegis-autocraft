@@ -28,39 +28,8 @@ local AltRecipes  = {}
 local MgmtGroups     = {}
 local MachineLabels       = {}
 local CustomMachineGroups = {}
-local ITEM_GROUPS = {
-["minecraft:oak_planks"] = "planks", ["minecraft:spruce_planks"] = "planks",
-["minecraft:birch_planks"] = "planks", ["minecraft:jungle_planks"] = "planks",
-["minecraft:acacia_planks"] = "planks", ["minecraft:dark_oak_planks"] = "planks",
-["minecraft:mangrove_planks"] = "planks", ["minecraft:cherry_planks"] = "planks",
-["minecraft:bamboo_planks"] = "planks",
-["minecraft:oak_slab"] = "slabs", ["minecraft:spruce_slab"] = "slabs",
-["minecraft:birch_slab"] = "slabs", ["minecraft:jungle_slab"] = "slabs",
-["minecraft:acacia_slab"] = "slabs", ["minecraft:dark_oak_slab"] = "slabs",
-["minecraft:mangrove_slab"] = "slabs", ["minecraft:cherry_slab"] = "slabs",
-["minecraft:bamboo_slab"] = "slabs",
-["minecraft:oak_log"] = "logs", ["minecraft:spruce_log"] = "logs",
-["minecraft:birch_log"] = "logs", ["minecraft:jungle_log"] = "logs",
-["minecraft:acacia_log"] = "logs", ["minecraft:dark_oak_log"] = "logs",
-["minecraft:mangrove_log"] = "logs", ["minecraft:cherry_log"] = "logs"
-}
-local GROUPS = {
-planks = {
-"minecraft:oak_planks", "minecraft:spruce_planks", "minecraft:birch_planks",
-"minecraft:jungle_planks", "minecraft:acacia_planks", "minecraft:dark_oak_planks",
-"minecraft:mangrove_planks", "minecraft:cherry_planks", "minecraft:bamboo_planks"
-},
-slabs = {
-"minecraft:oak_slab", "minecraft:spruce_slab", "minecraft:birch_slab",
-"minecraft:jungle_slab", "minecraft:acacia_slab", "minecraft:dark_oak_slab",
-"minecraft:mangrove_slab", "minecraft:cherry_slab", "minecraft:bamboo_slab"
-},
-logs = {
-"minecraft:oak_log", "minecraft:spruce_log", "minecraft:birch_log",
-"minecraft:jungle_log", "minecraft:acacia_log", "minecraft:dark_oak_log",
-"minecraft:mangrove_log", "minecraft:cherry_log"
-}
-}
+local ITEM_GROUPS = {}
+local GROUPS = {}
 currentTab = "RECIPES"
 currentModFilter = "All"
 searchFilter = ""
