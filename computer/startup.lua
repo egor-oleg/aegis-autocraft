@@ -1311,7 +1311,7 @@ local seenI = {}
 for _, dn in ipairs(devs) do
 if dn and not seenI[dn] then
 seenI[dn] = true
-local isDedicatedItemOut = (itemOutDev ~= nil and dn == itemOutDev)
+local isDedicatedItemOut = (itemOutDev ~= nil and dn == itemOutDev and dn ~= itemInDev)
 local m = peripheral.wrap(dn)
 if m and m.list and m.pushItems then
 local ok, items = pcall(m.list)
@@ -3094,11 +3094,21 @@ local rowY = listY + row
 local colX = col * colW + 1
 local m = machines[mi]
 local isSel = (fluidLearnMachine == m)
+local rroles = {}
+if fluidLearnItemIn  == m then rroles[#rroles + 1] = "II" end
+if fluidLearnFluidIn == m then rroles[#rroles + 1] = "FI" end
+if fluidLearnItemOut == m then rroles[#rroles + 1] = "IO" end
+if fluidLearnOutput  == m then rroles[#rroles + 1] = "FO" end
 local rtag, rcol
-if     fluidLearnOutput  == m then rtag, rcol = "FO:", colors.lime
-elseif fluidLearnItemIn  == m then rtag, rcol = "II:", colors.cyan
-elseif fluidLearnFluidIn == m then rtag, rcol = "FI:", colors.lightBlue
-elseif fluidLearnItemOut == m then rtag, rcol = "IO:", colors.orange
+if #rroles == 1 then
+rtag = rroles[1] .. ":"
+rcol = (rroles[1] == "II" and colors.cyan)
+or (rroles[1] == "FI" and colors.lightBlue)
+or (rroles[1] == "IO" and colors.orange)
+or colors.lime
+elseif #rroles > 1 then
+rtag = table.concat(rroles, "/") .. ":"
+rcol = colors.magenta
 end
 if rtag then
 local nm = (isSel and ">" or "") .. (getMachineDisplay(m) or m)
