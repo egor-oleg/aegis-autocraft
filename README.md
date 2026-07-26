@@ -81,9 +81,12 @@ Result screen: `-> NEW` new recipe, `-> +ALT` added as alternative, red `DUB` �
 
 | KEEP (auto-stock) | |
 |---|---|
-| Threshold → target | Crafts when stock drops below threshold, fills to target |
-| Priority + pause | Ordered list, per-entry and global pause |
-| Idle gate | Runs only after 3 min of inactivity |
+| Threshold → target | Threshold = when to start, target = how much to have. Drops below threshold → crafts back up to target (e.g. 10/64: once under 10, makes up to 64). Two values so it doesn't re-craft on every item used |
+| CRAFT | Craft this entry up to target right now |
+| TOP / ^ / v | Reorder; entries run top to bottom, higher = crafted first. Put important crafts higher |
+| PAUSE / PAUSE ALL | Pause one entry; PAUSE ALL stops all of KEEP until you resume it |
+| EDIT / DEL | Change threshold/target; remove the entry |
+| Idle gate | Runs only after 3 min of no interaction |
 
 | Logistics | |
 |---|---|
