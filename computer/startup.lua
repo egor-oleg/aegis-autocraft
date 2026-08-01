@@ -541,6 +541,7 @@ local function invalidateStockCache()
 _flInvCacheT = -100
 _tankStatsT = -100
 _stInvCacheT = -100
+stockEpoch = (stockEpoch or 0) + 1
 end
 local function getStorageInventoryCached()
 local now = os.clock()
@@ -3338,6 +3339,7 @@ if qe.kind == "fluid" then
 local fOk, fProduced, fIsItem = runFluidCraftAmount(qe.recipe, qe.name, qe.qty)
 if fOk then
 notifyCraftDone(qe.name, fProduced, not fIsItem)
+lastCraftMade = fProduced
 return true
 end
 notifyCraftFail(qe.name)
@@ -3375,7 +3377,8 @@ if groupAvailable(qe.name, getStorageInventory()) <= beforeTL then break end
 end
 end
 if craftOk then
-notifyCraftDone(qe.name, math.max(0, groupAvailable(qe.name, getStorageInventory()) - preStock), false)
+lastCraftMade = math.max(0, groupAvailable(qe.name, getStorageInventory()) - preStock)
+notifyCraftDone(qe.name, lastCraftMade, false)
 return true
 end
 notifyCraftFail(qe.name)
@@ -9043,6 +9046,14 @@ else
 print(" > " .. sf .. "_")
 end
 end
+if remoteRunFlag then
+remoteRunFlag = false
+if systemStatus == "IDLE" and #craftQueue > 0 then runCraftQueueAll() end
+end
+if remoteKeepRunFlag then
+remoteKeepRunFlag = false
+if systemStatus == "IDLE" and not Config.autostock_paused then checkAndRunAutostock() end
+end
 local event, param1, param2, param3
 if #pendingTouches > 0 then
 local t = table.remove(pendingTouches, 1)
@@ -10330,24 +10341,7 @@ if #craftQueue > 0 then
 craftQueuePopup = false
 craftQueueErrIdx = nil
 drawInterface()
-systemStatus = "MANUAL_CRAFT"
-local qi = 1
-while qi <= #craftQueue do
-cancelCrafting = false
-craftErrorLines = {}; craftErrorTitle = nil
-local qe = craftQueue[qi]
-local okQ, reason = queueRunOne(qe)
-if okQ then
-table.remove(craftQueue, qi)
-else
-qe.failed = reason
-qi = qi + 1
-end
-if cancelCrafting then break end
-drawInterface()
-end
-systemStatus = "IDLE"
-craftErrorLines = {}; craftErrorTitle = nil
+runCraftQueueAll()
 craftQueuePopup = true
 end
 elseif zone.id == "popup_close" then
@@ -11235,10 +11229,196 @@ end
 end
 end
 end
+REMOTE_PROTOCOL = "aegis_remote"
+remoteRunFlag = false
+remoteKeepRunFlag = false
+stockEpoch = 0
+craftResultId = 0
+lastCraftMade = 0
+function openRemoteLink()
+for _, nm in ipairs(peripheral.getNames()) do
+if peripheral.getType(nm) == "modem" then
+local m = peripheral.wrap(nm)
+if m and m.isWireless and m.isWireless() then
+rednet.open(nm)
+return true
+end
+end
+end
+return false
+end
+function runCraftQueueAll()
+if #craftQueue == 0 then return end
+systemStatus = "MANUAL_CRAFT"
+local qi = 1
+while qi <= #craftQueue do
+cancelCrafting = false
+craftErrorLines = {}; craftErrorTitle = nil
+local qe = craftQueue[qi]
+local okQ, reason = queueRunOne(qe)
+craftResultId = (craftResultId or 0) + 1
+if okQ then
+lastCraftResult = { ok = true, name = qe.name, made = lastCraftMade or qe.qty }
+table.remove(craftQueue, qi)
+else
+lastCraftResult = { ok = false, name = qe.name, err = (reason and reason[1]) or "craft failed", stage = craftStageDone or 0, total = craftStageTotal or 0 }
+qe.failed = reason
+qi = qi + 1
+end
+if cancelCrafting then break end
+drawInterface()
+end
+systemStatus = "IDLE"
+craftErrorLines = {}; craftErrorTitle = nil
+end
+function buildRemoteSnap()
+local snap = { cmd = "remote_snap", busy = systemStatus ~= "IDLE", keepPaused = Config.autostock_paused == true, epoch = stockEpoch or 0 }
+local q = {}
+for i = 1, #craftQueue do
+q[i] = { name = craftQueue[i].name, count = craftQueue[i].qty }
+end
+snap.queue = q
+local ctx = displayCtx
+if ctx and (ctx.total or 0) > 0 and not ctx.done then
+local sDone = craftStageDone or 0
+local sTotal = math.max(craftStageTotal or 0, sDone, 1)
+snap.job = { name = ctx.finalGoalItem or "?", done = sDone, total = sTotal, pct = math.floor(sDone / sTotal * 100) }
+elseif systemStatus ~= "IDLE" and fluidGoalLabel and fluidGoalLabel ~= "" then
+local sn = fluidStepNum or 0
+local st = math.max(fluidStepNum or 0, fluidStepTotal or 0, 1)
+snap.job = { name = fluidGoalLabel, done = sn, total = st, pct = math.floor(sn / st * 100) }
+end
+if snap.busy then snap.note = "crafting" elseif #q > 0 then snap.note = #q .. " queued" else snap.note = "" end
+snap.resultId = craftResultId or 0
+snap.result = lastCraftResult
+return snap
+end
+function remoteSearch(q)
+local out = { cmd = "remote_found", results = {} }
+if type(q) ~= "string" or q == "" then return out end
+local ql = q:lower()
+local names = {}
+for itemName in pairs(Recipes) do
+local sn = itemName:match(":(.+)$") or itemName
+if sn:lower():find(ql, 1, true) then names[#names + 1] = itemName end
+end
+table.sort(names)
+local inv = getStorageInventoryCached()
+local n = 0
+for i = 1, #names do
+if n >= 50 then break end
+n = n + 1
+out.results[n] = { name = names[i], have = groupAvailable(names[i], inv) }
+end
+local fset = {}
+for _, rec in pairs(FluidRecipes) do
+for _, o in ipairs(rec.outputs or {}) do fset[o.name] = true end
+end
+for _, alts in pairs(FluidAltRecipes) do
+for _, a in ipairs(alts) do
+for _, o in ipairs(a.outputs or {}) do fset[o.name] = true end
+end
+end
+local fnames = {}
+for fn in pairs(fset) do
+local sn = fn:match(":(.+)$") or fn
+if sn:lower():find(ql, 1, true) then fnames[#fnames + 1] = fn end
+end
+table.sort(fnames)
+local finv = getFluidInventoryCached()
+for i = 1, #fnames do
+if n >= 80 then break end
+n = n + 1
+out.results[n] = { name = fnames[i], fl = true, have = (finv and finv[fluidKey(fnames[i])]) or 0 }
+end
+return out
+end
+function remoteMax(name)
+if type(name) ~= "string" then return 0 end
+if Recipes[name] then
+local snap = getStorageInventoryCached()
+local snapCraft = {}
+for k, v in pairs(snap) do snapCraft[k] = v end
+snapCraft[name] = 0
+if ITEM_GROUPS[name] and GROUPS[ITEM_GROUPS[name]] then
+for _, alt in ipairs(GROUPS[ITEM_GROUPS[name]]) do snapCraft[alt] = 0 end
+end
+local cs = recipesScanResults[name]
+if cs and type(cs.maxCraftable) == "number" and not next(cs.missing or {}) then return cs.maxCraftable end
+local okMx, mx = pcall(maxCraftableExact, name, snapCraft)
+return (okMx and type(mx) == "number") and mx or 0
+end
+local prod = fluidProducers(name)
+if prod and prod[1] and prod[1].recipe then
+local recipe = prod[1].recipe
+local fstock = {}
+for k, v in pairs(getFluidInventoryCached()) do fstock[fluidNameFromKey(k)] = v end
+local istock = getStorageInventoryCached()
+local perOp = 0
+for _, o in ipairs(recipe.outputs or {}) do if o.name == name then perOp = o.amount break end end
+if perOp <= 0 then
+for _, o in ipairs(recipe.item_outputs or {}) do if o.name == name then perOp = o.count break end end
+end
+local okM, ops = pcall(fluidRecipeMaxOps, recipe, fstock, istock, {})
+if not okM or type(ops) ~= "number" then ops = 0 end
+return math.min(FLUID_MAX_CAP, ops * (perOp > 0 and perOp or 1))
+end
+return 0
+end
+function handleRemote(sid, msg)
+local cmd = msg.cmd
+if cmd == "remote_pull" then
+rednet.send(sid, buildRemoteSnap(), REMOTE_PROTOCOL)
+elseif cmd == "remote_search" then
+rednet.send(sid, remoteSearch(msg.q), REMOTE_PROTOCOL)
+elseif cmd == "remote_max" then
+local mhave = 0
+if type(msg.name) == "string" then
+if Recipes[msg.name] then mhave = groupAvailable(msg.name, getStorageInventoryCached())
+else mhave = (getFluidInventoryCached()[fluidKey(msg.name)]) or 0 end
+end
+rednet.send(sid, { cmd = "remote_maxr", name = msg.name, max = remoteMax(msg.name), have = mhave }, REMOTE_PROTOCOL)
+elseif cmd == "remote_craft" then
+local nm = msg.name
+if type(nm) == "string" then
+local cnt = math.max(1, math.floor(tonumber(msg.count) or 1))
+if Recipes[nm] then
+craftQueue[#craftQueue + 1] = { kind = "item", name = nm, qty = cnt }
+if msg.now then remoteRunFlag = true end
+else
+local prod = fluidProducers(nm)
+if prod and prod[1] and prod[1].recipe then
+craftQueue[#craftQueue + 1] = { kind = "fluid", name = nm, qty = cnt, recipe = prod[1].recipe }
+if msg.now then remoteRunFlag = true end
+end
+end
+end
+rednet.send(sid, buildRemoteSnap(), REMOTE_PROTOCOL)
+elseif cmd == "remote_do" then
+if msg.id == "cancel" then
+cancelCrafting = true
+elseif msg.id == "runall" then
+remoteRunFlag = true
+elseif msg.id == "keep_on" then
+Config.autostock_paused = false
+saveData()
+elseif msg.id == "keep_off" then
+Config.autostock_paused = true
+saveData()
+elseif msg.id == "keep_run" then
+remoteKeepRunFlag = true
+elseif msg.id == "qdel" then
+local qi = tonumber(msg.arg)
+if qi and craftQueue[qi] then table.remove(craftQueue, qi) end
+end
+rednet.send(sid, buildRemoteSnap(), REMOTE_PROTOCOL)
+end
+end
 local function runMain()
 initDataFiles()
 loadData()
 syncFluidItemStubs()
+openRemoteLink()
 parallel.waitForAny(
 function()
 while true do
@@ -11281,6 +11461,12 @@ fluidSearchFilter = fluidSearchFilter:sub(1, -2)
 fluidRecipePage = 1
 end
 end
+end
+end,
+function()
+while true do
+local sid, msg = rednet.receive(REMOTE_PROTOCOL)
+if type(msg) == "table" and msg.cmd then pcall(handleRemote, sid, msg) end
 end
 end,
 mainLoop,
