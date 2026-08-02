@@ -1,38 +1,32 @@
-local PROTOCOL = "aegis_remote"
-local STATE_FILE = "aegis_pocket.json"
+local PROTOCOL = "aegis_miner"
+local STATE_FILE = "miner_pocket.json"
 local PULL_SECS = 3
 local LINK_SECS = 12
-local TABS = { "CRAFT", "QUEUE" }
+local TABS = { "FLEET", "ZONES", "FILTER", "YIELD" }
+local SHORT = { FLEET = "FLT", ZONES = "ZON", FILTER = "FIL", YIELD = "YLD" }
+local TAG = {
+mining = "MINE", returning = "RETN", deposit = "DROP", queued = "WAIT", waiting = "WAIT",
+refuel = "FUEL", paused = "HOLD", idle = "IDLE", offline = "OFF ", stranded = "STUK", nofuel = "DRY "
+}
+local TAG_COLOR = {
+mining = colors.lime, returning = colors.cyan, deposit = colors.yellow, queued = colors.orange,
+waiting = colors.orange, refuel = colors.yellow, paused = colors.orange, idle = colors.lightGray,
+offline = colors.red, stranded = colors.red, nofuel = colors.red
+}
+
 Snap = nil
-Found = nil
 Host = nil
-tab = "CRAFT"
+tab = "FLEET"
 page = 1
-query = ""
-sel = 1
-pickItem = nil
-pickCount = 1
-pickTyped = false
-pickMax = nil
-lastEpoch = nil
-resultMsg = nil
-lastResultId = nil
+pick = nil
+zone = nil
 lastSnap = 0
-note = ""
+armRecall = false
 hits = {}
 Buf = {}
 BW, BH = 26, 20
 colour = term.isColour()
-COL = {
-ok = { colors.black, colors.lime },
-warn = { colors.black, colors.orange },
-danger = { colors.white, colors.red },
-cool = { colors.black, colors.cyan },
-mute = { colors.black, colors.lightGray },
-cancel = { colors.white, colors.gray },
-tabon = { colors.black, colors.lime },
-taboff = { colors.lightGray, colors.gray }
-}
+
 function bufInit(w, h)
 BW, BH = w, h
 for y = 1, h do
@@ -45,6 +39,7 @@ row.b[x] = "f"
 end
 end
 end
+
 function put(x, y, text, fg, bg)
 if y < 1 or y > BH then return end
 bg = bg or colors.black
@@ -63,27 +58,27 @@ row.b[cx] = b
 end
 end
 end
+
 function flush()
 for y = 1, BH do
 term.setCursorPos(1, y)
 term.blit(table.concat(Buf[y].t), table.concat(Buf[y].f), table.concat(Buf[y].b))
 end
 end
+
 function bar(x, y, text, fg, bg, id, arg)
 put(x, y, text, fg, bg)
 hits[#hits + 1] = { id = id, arg = arg, x1 = x, x2 = x + #text - 1, y = y }
 return x + #text
 end
-function btn(x, y, label, kind, id, arg)
-local c = COL[kind] or COL.mute
-return bar(x, y, " " .. label .. " ", c[1], c[2], id, arg)
-end
+
 function saveState()
 local fh = fs.open(STATE_FILE, "w")
 if not fh then return end
 fh.write(textutils.serializeJSON({ host = Host, tab = tab }))
 fh.close()
 end
+
 function loadState()
 if not fs.exists(STATE_FILE) then return end
 local fh = fs.open(STATE_FILE, "r")
@@ -93,242 +88,292 @@ fh.close()
 local ok, s = pcall(textutils.unserializeJSON, data or "")
 if not ok or type(s) ~= "table" then return end
 Host = s.host
-if s.tab == "CRAFT" or s.tab == "QUEUE" then tab = s.tab end
+if s.tab then tab = s.tab end
 end
+
 function openRednet()
 local modem = peripheral.find("modem")
 if not modem then return false end
 rednet.open(peripheral.getName(modem))
 return true
 end
-function send(msg)
-if Host then rednet.send(Host, msg, PROTOCOL) else rednet.broadcast(msg, PROTOCOL) end
+
+function ask(id, arg)
+local msg = { cmd = "remote_pull" }
+if id then msg = { cmd = "remote_do", id = id, arg = arg } end
+if Host and linked() then rednet.send(Host, msg, PROTOCOL) else rednet.broadcast(msg, PROTOCOL) end
 end
+
 function linked()
 return Snap ~= nil and os.clock() - lastSnap < LINK_SECS
 end
+
 function shortName(name)
 return name:match(":(.+)$") or name
 end
+
+function fuelText(n)
+if n >= 10000 then return string.format("%4.1fk", n / 1000) end
+return string.format("%5d", n)
+end
+
 function perPage(top)
 return math.max(1, BH - 1 - (top or 4))
 end
-function paging(count, top)
-local per = perPage(top)
+
+function paging(count, span, top)
+local per = math.max(1, math.floor(perPage(top) / (span or 1)))
 local pages = math.max(1, math.ceil(count / per))
 if page > pages then page = pages end
 if page < 1 then page = 1 end
 local first = (page - 1) * per + 1
 return first, math.min(count, first + per - 1), pages
 end
-function progbar(x, y, w, pct)
-pct = math.max(0, math.min(100, pct))
-local barw = w - 5
-local inner = barw - 2
-local fill = math.floor(inner * pct / 100 + 0.5)
-put(x, y, "[", colors.lightGray)
-if fill > 0 then put(x + 1, y, string.rep("|", fill), colors.lime) end
-if inner - fill > 0 then put(x + 1 + fill, y, string.rep(".", inner - fill), colors.gray) end
-put(x + barw - 1, y, "]", colors.lightGray)
-put(x + barw + 1, y, string.format("%3d%%", pct), colors.white)
-end
+
 function drawHead()
-local ids = "ID " .. os.getComputerID()
-put(BW - #ids + 1, 1, ids, colors.lightGray)
-if not linked() then put(1, 1, "NO LINK", colors.red) return end
-put(1, 1, "KEEP", colors.lightGray)
-btn(7, 1, "OFF", Snap.keepPaused and "warn" or "taboff", "keep_off")
-btn(12, 1, "ON", (not Snap.keepPaused) and "ok" or "taboff", "keep_on")
-btn(16, 1, "RUN", Snap.keepPaused and "mute" or "cool", "keep_run")
+local fleet = Snap and Snap.fleet or {}
+local live = 0
+for _, t in ipairs(fleet) do if t.status ~= "offline" then live = live + 1 end end
+put(1, 1, "C.A.V.E", colors.lime)
+if not linked() then
+put(9, 1, "no link", colors.red)
+return
 end
+put(9, 1, live .. "/" .. #fleet, colors.white)
+put(14, 1, "G" .. (Snap.gps or 0) .. "/4", (Snap.gps or 0) >= 4 and colors.lime or colors.red)
+put(19, 1, "F" .. math.floor((Snap.supply or 0) / 1000) .. "k", colors.yellow)
+end
+
 function drawTabs()
-local total = 0
-for _, name in ipairs(TABS) do total = total + #name + 2 end
-local x = math.floor((BW - total) / 2) + 1
+local total = -1
+for _, name in ipairs(TABS) do total = total + #SHORT[name] + 3 end
+local x = math.max(1, math.floor((BW - total) / 2) + 1)
 for _, name in ipairs(TABS) do
 local on = tab == name
-x = btn(x, 2, name, on and "tabon" or "taboff", "tab", name)
+x = bar(x, 2, " " .. SHORT[name] .. " ", on and colors.black or colors.lightGray,
+on and colors.lime or colors.gray, "tab", name) + 1
 end
 put(1, 3, string.rep("-", BW), colors.gray)
 end
+
 function drawPager(pages)
 local y = BH - 1
 put(1, y, string.rep("-", BW), colors.gray)
 if pages <= 1 then return end
-if page > 1 then bar(1, y, " < ", colors.black, colors.lightGray, "prev") end
+if page > 1 then bar(1, y, " < ", colors.black, colors.lightGray, "prev", page - 1) end
 local caption = page .. "/" .. pages
 put(math.floor((BW - #caption) / 2) + 1, y, caption, colors.lime)
-if page < pages then bar(BW - 2, y, " > ", colors.black, colors.lightGray, "next") end
+if page < pages then bar(BW - 2, y, " > ", colors.black, colors.lightGray, "next", page + 1) end
 end
+
 function drawNote()
-if not linked() then put(1, BH, "searching for AEGIS...", colors.lightGray) return end
-if Snap and Snap.busy and Snap.job then
-progbar(1, BH, BW, Snap.job.pct or 0)
+local text = Snap and Snap.note or ""
+if not linked() then text = "searching for controller" end
+put(1, BH, text:sub(1, BW), colors.lightGray)
+end
+
+function drawFleet()
+local list = Snap.fleet
+table.sort(list, function(a, b)
+local pa = (a.status == "offline" or a.status == "nofuel") and 0 or 1
+local pb = (b.status == "offline" or b.status == "nofuel") and 0 or 1
+if pa ~= pb then return pa < pb end
+return (a.id or 0) < (b.id or 0)
+end)
+if #list == 0 then
+put(1, 5, "no turtles registered", colors.gray)
 return
 end
-if resultMsg then
-if resultMsg.ok then
-put(1, BH, ("MADE " .. shortName(resultMsg.name) .. " x" .. (resultMsg.made or 0)):sub(1, BW), colors.lime)
+if armRecall then
+bar(1, 4, " SURE? ", colors.black, colors.red, "fleet_recall")
+bar(9, 4, " CANCEL ", colors.white, colors.gray, "arm_no")
 else
-put(1, BH, ("FAIL " .. shortName(resultMsg.name) .. " s" .. (resultMsg.stage or 0) .. "/" .. (resultMsg.total or 0) .. " " .. (resultMsg.err or "?")):sub(1, BW), colors.red)
+bar(1, 4, " RECALL ALL ", colors.black, colors.cyan, "arm_recall")
 end
-return
-end
-put(1, BH, note:sub(1, BW), colors.lightGray)
-end
-function drawCraft()
-put(1, 4, "FIND:", colors.lightGray)
-local shown = query == "" and "<item>" or query
-shown = shown:sub(1, 16)
-shown = shown .. string.rep(" ", 16 - #shown)
-bar(6, 4, shown, query == "" and colors.gray or colors.black, query == "" and colors.black or colors.white, "focus")
-bar(23, 4, "[X]", colors.white, colors.red, "clearq")
-local res = Found and Found.results or {}
-if #res == 0 then
-if query == "" then
-put(1, 6, "type name to search", colors.gray)
-put(1, 8, "UP DN", colors.lightGray)
-put(13, 8, "select", colors.gray)
-put(1, 10, "< >", colors.lightGray)
-put(13, 10, "category", colors.gray)
-put(1, 12, "ENTER", colors.lightGray)
-put(13, 12, "order item", colors.gray)
-else
-put(1, 6, "no matches", colors.gray)
-end
-drawPager(1)
-return
-end
-if sel > #res then sel = #res end
-if sel < 1 then sel = 1 end
-local per = perPage(5)
-page = math.floor((sel - 1) / per) + 1
-local first, last, pages = paging(#res, 5)
+local first, last, pages = paging(#list, 2, 5)
 local y = 5
 for i = first, last do
-local it = res[i]
-local rowBg = (i == sel) and colors.gray or colors.black
-if i == sel then put(1, y, string.rep(" ", BW), colors.gray, colors.gray) end
-bar(1, y, shortName(it.name):sub(1, 18), colors.white, rowBg, "pick", i)
-local h = tostring(it.have or 0)
-put(BW - #h, y, h, colors.cyan, rowBg)
-y = y + 1
+local t = list[i]
+local status = t.status or "idle"
+bar(1, y, string.format("#%-3s", t.id), colors.white, colors.black, "turtle", t.id)
+put(5, y, TAG[status] or "????", TAG_COLOR[status] or colors.lightGray)
+put(10, y, fuelText(t.fuel or 0), (t.fuel or 0) < 1000 and colors.red or colors.lime)
+put(16, y, string.format("%3d%%", t.inv or 0), (t.inv or 0) >= 90 and colors.orange or colors.lightGray)
+put(21, y, string.format("%3d%%", t.prog or 0), colors.cyan)
+local at = t.pos
+local where = at and (at.x .. " " .. at.y .. " " .. at.z) or "no position yet"
+bar(2, y + 1, where:sub(1, 15), colors.lightGray, colors.black, "turtle", t.id)
+local slot = tostring(t.slot or "-")
+put(BW - #slot, y + 1, slot:sub(1, 9), colors.gray)
+y = y + 2
 end
 drawPager(pages)
 end
+
+function turtleById(id)
+for _, t in ipairs(Snap.fleet) do
+if t.id == id then return t end
+end
+end
+
 function drawPick()
-put(1, 4, "ORDER", colors.lime)
-put(1, 5, shortName(pickItem.name):sub(1, BW), colors.white)
-local x = 1
-put(x, 7, "STOCK", colors.lightGray) x = x + 6
-local sv = (pickItem.have or 0) .. (pickItem.fl and "mB" or "")
-put(x, 7, sv, colors.cyan) x = x + #sv + 2
-put(x, 7, "AMT", colors.lightGray) x = x + 4
-local av = tostring(pickCount)
-put(x, 7, av, colors.lime) x = x + #av + 2
-put(x, 7, "MAX", colors.lightGray) x = x + 4
-put(x, 7, pickMax == nil and "?" or tostring(pickMax), pickMax == nil and colors.yellow or (pickMax > 0 and colors.lime or colors.red))
-local amts = { 1, 8, 16, 32, 64 }
-local sx = { 2, 6, 10, 15, 20 }
-for i = 1, 5 do
-btn(sx[i], 9, "+" .. amts[i], "mute", "q_add", amts[i])
-btn(sx[i], 10, "-" .. amts[i], "mute", "q_add", -amts[i])
+local t = turtleById(pick)
+if not t then pick = nil return end
+bar(1, 4, "#" .. t.id, colors.white, colors.black, "back")
+bar(BW - 7, 4, " BACK ", colors.black, colors.lightGray, "back")
+local status = t.status or "idle"
+put(1, 6, "STATUS " .. (TAG[status] or status), TAG_COLOR[status] or colors.white)
+put(1, 7, "FUEL   " .. (t.fuel or 0), colors.yellow)
+put(1, 8, "CARGO  " .. (t.inv or 0) .. "%", colors.lightGray)
+put(1, 9, "SLOT   " .. tostring(t.slot or "-"):sub(1, BW - 8), colors.lightGray)
+local at = t.pos or { x = 0, y = 0, z = 0 }
+put(1, 10, "AT     " .. at.x .. " " .. at.y .. " " .. at.z, colors.lightGray)
+put(1, 11, "ZONE   " .. (t.zone and ("Z" .. t.zone) or "-") .. "  " .. (t.prog or 0) .. "%", colors.lightGray)
+put(1, 12, "SCAN   " .. (t.geo and "geo scanner" or "pickaxe only"), t.geo and colors.lime or colors.gray)
+bar(1, 14, " PAUSE  ", colors.black, colors.orange, "turtle_pause", t.id)
+bar(11, 14, " RESUME ", colors.black, colors.lime, "turtle_resume", t.id)
+bar(1, 16, " RECALL ", colors.black, colors.cyan, "turtle_recall", t.id)
+bar(11, 16, "  STOP  ", colors.white, colors.red, "turtle_stop", t.id)
 end
-btn(5, 12, "CONFIRM", "ok", "craft_now")
-btn(15, 12, "+QUEUE", "cool", "craft_queue")
-if pickMax and pickMax > 0 then
-local mx0 = math.floor((BW - 14) / 2) + 1
-btn(mx0, 14, "CANCEL", "cancel", "pick_back")
-btn(mx0 + 9, 14, "MAX", "ok", "q_max")
-else
-btn(math.floor((BW - 8) / 2) + 1, 14, "CANCEL", "cancel", "pick_back")
-end
-put(1, 16, "digits set qty, ENTER", colors.gray)
-end
-function drawQueue()
-local job = Snap.job
-if job then
-put(1, 4, shortName(job.name):sub(1, BW), colors.white)
-progbar(1, 5, BW, job.pct or 0)
-put(1, 6, (job.done or 0) .. "/" .. (job.total or 0) .. " steps", colors.cyan)
-btn(1, 7, "CANCEL", "danger", "cancel")
-else
-put(1, 4, "no active craft", colors.gray)
-end
-local q = Snap.queue or {}
-put(1, 9, "QUEUE", colors.lightGray)
-if #q > 0 then btn(BW - 8, 9, "RUN ALL", "ok", "runall") end
-put(1, 10, string.rep("-", BW), colors.gray)
-if #q == 0 then
-put(1, 11, "empty, use +QUEUE", colors.gray)
-drawPager(1)
+
+function drawZones()
+local list = Snap.zones
+if #list == 0 then
+put(1, 5, "no zones", colors.gray)
 return
 end
-local first, last, pages = paging(#q, 10)
-local y = 11
+local first, last, pages = paging(#list)
+local y = 4
 for i = first, last do
-local it = q[i]
-put(1, y, ((it.count or 1) .. "x " .. shortName(it.name)):sub(1, BW - 4), colors.white)
-bar(BW - 2, y, "[X]", colors.white, colors.red, "qdel", i)
+local z = list[i]
+bar(1, y, string.format("Z%-3s", z.id), colors.white, colors.black, "zone", z.id)
+put(5, y, z.pattern:upper():sub(1, 6), colors.yellow)
+put(12, y, string.format("%3d%%", z.prog or 0), colors.lime)
+put(17, y, "x" .. z.crew, colors.lightGray)
+local state, color = "off", colors.gray
+if z.done then state, color = "done", colors.cyan
+elseif z.held then state, color = "hold", colors.orange
+elseif z.active then state, color = "run", colors.lime end
+put(21, y, state, color)
 y = y + 1
 end
 drawPager(pages)
 end
+
+function zoneById(id)
+for _, z in ipairs(Snap.zones) do
+if z.id == id then return z end
+end
+end
+
+function drawZone()
+local z = zoneById(zone)
+if not z then zone = nil return end
+bar(1, 4, "Z" .. z.id, colors.white, colors.black, "back")
+bar(BW - 7, 4, " BACK ", colors.black, colors.lightGray, "back")
+put(1, 6, "MODE   " .. z.pattern:upper(), colors.yellow)
+put(1, 7, "CREW   " .. z.crew .. " turtles", colors.lightGray)
+put(1, 8, "DONE   " .. (z.prog or 0) .. "%", colors.lime)
+put(1, 9, "STATE  " .. (z.done and "complete" or (z.active and "running" or "stopped")), colors.white)
+bar(1, 12, "  RUN   ", colors.black, colors.lime, "zone_start", z.id)
+bar(11, 12, z.held and "   GO   " or "  HOLD  ", colors.black, colors.orange, "zone_hold", z.id)
+bar(1, 14, "  STOP  ", colors.white, colors.red, "zone_stop", z.id)
+end
+
+function drawFilter()
+local list = Snap.items
+bar(1, 4, Snap.targetsOn and " ONLY LISTED ORES " or " EVERY ORE TAKEN  ", colors.black,
+Snap.targetsOn and colors.lime or colors.lightGray, "toggle_targets")
+if #list == 0 then
+put(1, 6, "ore chest is empty", colors.gray)
+return
+end
+local first, last, pages = paging(#list + 1)
+local y = 5
+for i = first, math.min(last, #list) do
+local item = list[i]
+put(1, y, shortName(item.name):sub(1, BW - 9), item.blocked and colors.red or colors.white)
+bar(BW - 7, y, "[B]", item.blocked and colors.black or colors.lightGray,
+item.blocked and colors.red or colors.gray, "toggle_filter", item.name)
+bar(BW - 3, y, "[T]", item.target and colors.black or colors.lightGray,
+item.target and colors.lime or colors.gray, "toggle_target", item.name)
+y = y + 1
+end
+drawPager(pages)
+end
+
+function drawYield()
+local list = Snap.bands
+if #list == 0 then
+put(1, 5, "nothing learned yet", colors.gray)
+return
+end
+local peak = 0
+for _, b in ipairs(list) do
+if b.scans > 0 and b.found / b.scans > peak then peak = b.found / b.scans end
+end
+local width = BW - 12
+local first, last, pages = paging(#list)
+local y = 4
+for i = first, last do
+local b = list[i]
+local avg = b.scans > 0 and b.found / b.scans or 0
+put(1, y, string.format("%4d", b.y), colors.white)
+put(5, y, "|", colors.lightGray)
+local fill = 0
+if peak > 0 then fill = math.floor(avg / peak * width + 0.5) end
+if fill < 1 and avg > 0 then fill = 1 end
+if fill > 0 then
+if b.scans >= 12 then put(6, y, string.rep(" ", fill), colors.white, colors.white)
+else put(6, y, string.rep("/", fill), colors.white) end
+end
+put(BW - 5, y, string.format("%5.1f", avg), colors.lightGray)
+y = y + 1
+end
+drawPager(pages)
+end
+
 function draw()
 bufInit(term.getSize())
 hits = {}
 drawHead()
 drawTabs()
 if not linked() then
-put(1, 6, "AEGIS not answering", colors.red)
-put(1, 8, "check ender modem on", colors.lightGray)
-put(1, 9, "the main computer", colors.lightGray)
-btn(1, 11, "RETRY", "ok", "retry")
-drawNote()
-flush()
-return
-end
-if pickItem then drawPick()
-elseif tab == "CRAFT" then drawCraft()
-else drawQueue() end
+put(1, 6, "controller not answering", colors.red)
+put(1, 8, "check the ender modem", colors.lightGray)
+bar(1, 10, " RETRY ", colors.black, colors.lime, "retry")
+elseif pick then drawPick()
+elseif zone then drawZone()
+elseif tab == "FLEET" then drawFleet()
+elseif tab == "ZONES" then drawZones()
+elseif tab == "FILTER" then drawFilter()
+else drawYield() end
 drawNote()
 flush()
 end
+
 function act(id, arg)
 if id == "tab" then
 tab = arg
 page = 1
-sel = 1
-pickItem = nil
+armRecall = false
+pick = nil
+zone = nil
 saveState()
-elseif id == "prev" then if tab == "CRAFT" then sel = math.max(1, sel - perPage(5)) else page = math.max(1, page - 1) end
-elseif id == "next" then if tab == "CRAFT" then local rn = Found and Found.results and #Found.results or 1 sel = math.min(math.max(1, rn), sel + perPage(5)) else page = page + 1 end
-elseif id == "clearq" then query = "" Found = nil sel = 1
-elseif id == "pick" then
-local it = Found and Found.results and Found.results[arg]
-if it then pickItem = it pickCount = it.have or 0 pickTyped = false pickMax = nil send({ cmd = "remote_max", name = it.name }) end
-elseif id == "pick_back" then pickItem = nil
-elseif id == "q_add" then pickCount = math.max(1, pickCount + arg) pickTyped = true
-elseif id == "q_max" then if pickMax and pickMax > 0 then if pickItem.fl then pickCount = pickMax else pickCount = pickCount + pickMax end pickTyped = true end
-elseif id == "keep_on" then send({ cmd = "remote_do", id = "keep_on" }) send({ cmd = "remote_pull" })
-elseif id == "keep_off" then send({ cmd = "remote_do", id = "keep_off" }) send({ cmd = "remote_pull" })
-elseif id == "keep_run" then send({ cmd = "remote_do", id = "keep_run" }) note = "keep run" send({ cmd = "remote_pull" })
-elseif id == "craft_now" or id == "craft_queue" then
-if pickItem then
-send({ cmd = "remote_craft", name = pickItem.name, count = pickCount, now = id == "craft_now" })
-note = (id == "craft_now" and "crafting " or "queued ") .. pickCount .. "x"
-pickItem = nil
-tab = "QUEUE"
-page = 1
-saveState()
-send({ cmd = "remote_pull" })
+elseif id == "prev" then page = math.max(1, arg or page - 1)
+elseif id == "next" then page = math.max(1, arg or page + 1)
+elseif id == "arm_recall" then armRecall = true
+elseif id == "arm_no" then armRecall = false
+elseif id == "fleet_recall" then
+armRecall = false
+ask(id)
+elseif id == "turtle" then pick = arg
+elseif id == "zone" then zone = arg
+elseif id == "back" then pick = nil zone = nil
+elseif id == "retry" then ask()
+else ask(id, arg) end
 end
-elseif id == "runall" then send({ cmd = "remote_do", id = "runall" }) note = "run all sent" send({ cmd = "remote_pull" })
-elseif id == "cancel" then send({ cmd = "remote_do", id = "cancel" }) note = "cancel sent"
-elseif id == "qdel" then send({ cmd = "remote_do", id = "qdel", arg = arg }) send({ cmd = "remote_pull" })
-elseif id == "retry" then send({ cmd = "remote_pull" })
-end
-end
+
 function click(x, y)
 for _, spot in ipairs(hits) do
 if y == spot.y and x >= spot.x1 and x <= spot.x2 then
@@ -337,101 +382,49 @@ return
 end
 end
 end
-function onChar(ch)
-if pickItem then
-if ch:match("%d") then
-if not pickTyped then pickCount = tonumber(ch) pickTyped = true
-else pickCount = math.min(999999, pickCount * 10 + tonumber(ch)) end
-if pickCount < 1 then pickCount = 1 end
-end
-return
-end
-if tab == "CRAFT" then
-query = (query .. ch):sub(1, 64)
-sel = 1
-send({ cmd = "remote_search", q = query })
-end
-end
-function cycleTab(dir)
+
+function keypress(code)
+if code == keys.left or code == keys.right then
 local at = 1
-for i, nm in ipairs(TABS) do if nm == tab then at = i end end
-act("tab", TABS[((at - 1 + dir) % #TABS) + 1])
-end
-function onKey(code)
-if pickItem then
-if code == keys.enter then act("craft_now")
-elseif code == keys.backspace then
-pickCount = math.floor(pickCount / 10)
-if pickCount < 1 then pickCount = 1 pickTyped = false end
-end
-return
-end
-if tab == "CRAFT" then
-local res = Found and Found.results or {}
-local n = #res
-if code == keys.up then sel = math.max(1, sel - 1)
-elseif code == keys.down then sel = math.min(math.max(1, n), sel + 1)
-elseif code == keys.left then cycleTab(-1)
-elseif code == keys.right then cycleTab(1)
-elseif code == keys.enter then if res[sel] then act("pick", sel) end
-elseif code == keys.backspace then query = query:sub(1, -2) sel = 1 send({ cmd = "remote_search", q = query }) end
-return
-end
-if code == keys.up then act("prev")
+for i, name in ipairs(TABS) do if name == tab then at = i end end
+if code == keys.left then at = at - 1 else at = at + 1 end
+act("tab", TABS[(at - 1) % #TABS + 1])
+elseif code == keys.up then act("prev")
 elseif code == keys.down then act("next")
-elseif code == keys.left then cycleTab(-1)
-elseif code == keys.right then cycleTab(1) end
+elseif code == keys.backspace then act("back")
+elseif code == keys.enter then ask() end
 end
+
 term.clear()
 term.setCursorPos(1, 1)
-print("A.E.G.I.S. remote")
+print("C.A.V.E. remote")
 loadState()
-if not openRednet() then print("no modem, cannot reach AEGIS") end
-send({ cmd = "remote_pull" })
+if not openRednet() then
+print("no modem, cannot reach the controller")
+end
+ask()
 draw()
 local tick = os.startTimer(PULL_SECS)
 while true do
 local ev, p1, p2, p3 = os.pullEvent()
 if ev == "timer" and p1 == tick then
 tick = os.startTimer(PULL_SECS)
-send({ cmd = "remote_pull" })
+ask()
 elseif ev == "rednet_message" and p3 == PROTOCOL then
-if type(p2) == "table" then
-if p2.cmd == "remote_snap" then
-if Host ~= p1 then Host = p1 saveState() end
+if type(p2) == "table" and p2.cmd == "remote_snap" then
+if Host ~= p1 then
+Host = p1
+saveState()
+end
 Snap = p2
 lastSnap = os.clock()
-if p2.note then note = p2.note end
-if p2.epoch ~= lastEpoch then
-lastEpoch = p2.epoch
-if query ~= "" then send({ cmd = "remote_search", q = query }) end
-if pickItem then send({ cmd = "remote_max", name = pickItem.name }) end
-end
-if lastResultId == nil then lastResultId = p2.resultId
-elseif p2.resultId ~= lastResultId then lastResultId = p2.resultId resultMsg = p2.result end
 draw()
-elseif p2.cmd == "remote_found" then
-Found = p2
-draw()
-elseif p2.cmd == "remote_maxr" then
-if pickItem and p2.name == pickItem.name then pickMax = p2.max if p2.have ~= nil then pickItem.have = p2.have end end
-draw()
-elseif p2.cmd == "remote_ack" then
-if p2.note then note = p2.note end
-draw()
-end
 end
 elseif ev == "mouse_click" then
-resultMsg = nil
 click(p2, p3)
 draw()
-elseif ev == "char" then
-resultMsg = nil
-onChar(p1)
-draw()
 elseif ev == "key" then
-resultMsg = nil
-onKey(p1)
+keypress(p1)
 draw()
 elseif ev == "term_resize" then
 draw()
