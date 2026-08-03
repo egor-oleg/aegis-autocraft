@@ -101,3 +101,5 @@ Result screen: `-> NEW` new recipe, `-> +ALT` added as alternative, red `DUB` â€
 | STOCK / History | Storage view with filters; one-tap repeat of recent crafts |
 | ntfy push | Phone notification on completion/failure; `/status`, `/queue`, `/cancel` from the phone |
 | GitHub sync | Export/import the recipe library. Setup: create a private repo, generate a token, enter the repo and token in the GIT tab â€” after that import/export becomes available |
+
+Technical Support & Community https://www.reddit.com/r/ComputerCraft/comments/1uyx4td/aegis_autocraft_for_computercraft_cctweaked/
