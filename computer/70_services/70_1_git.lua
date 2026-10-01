@@ -37,6 +37,8 @@ end
 
 function hasCustomIO(rec)
 	if type(rec) ~= "table" then return false end
+	-- crafter recipes are pinned to this world's peripheral names
+	if rec.type == "crafter" then return true end
 	if rec.output_device       and rec.output_device       ~= "" then return true end
 	if rec.item_input_device   and rec.item_input_device   ~= "" then return true end
 	if rec.fluid_input_device  and rec.fluid_input_device  ~= "" then return true end

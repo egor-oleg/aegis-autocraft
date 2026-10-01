@@ -95,6 +95,8 @@ function stepTokens(step)
 		return fluidRecipeTokens(step.fluidRecipe)
 	end
 	if step.type == "turtle" then return { "TURTLE" } end
+	-- one physical grid, one craft at a time
+	if step.type == "crafter" then return { "CRAFTER" } end
 	if step.output_device and step.output_device ~= "" then
 		local toks = {}
 		local seen = {}

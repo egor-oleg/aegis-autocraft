@@ -352,7 +352,14 @@ function _touchQty(zone, x, y)
 			if plan and #plan > 0 then
 				local seen = {}
 				for _, step in ipairs(plan) do
-					if step.type ~= "turtle" and step.machine_name and step.machine_name ~= ""
+					if step.type == "crafter" and step.count and step.count > 0 then
+						local okC, whyC = crafterReady(step.grid_cells)
+						if not okC and not seen["crafter:" .. tostring(whyC)] then
+							seen["crafter:" .. tostring(whyC)] = true
+							table.insert(missMachines, tostring(whyC))
+							table.insert(missSteps, step.item)
+						end
+					elseif step.type ~= "turtle" and step.machine_name and step.machine_name ~= ""
 					and step.count and step.count > 0 then
 						local isSplit = (step.output_device and step.output_device ~= "")
 						local pool

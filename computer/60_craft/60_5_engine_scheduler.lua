@@ -104,6 +104,9 @@ function execStep(step, ctx, node)
 		elseif step.type == "turtle" then
 			if not _execStepTurtle(step, ctx, node, state) then return false end
 			myCleanup = state.myCleanup
+		elseif step.type == "crafter" then
+			if not _execStepCrafter(step, ctx, node, state) then return false end
+			myCleanup = state.myCleanup
 		else
 			if not _execStepMachine(step, ctx, node, state) then return false end
 			myCleanup = state.myCleanup
@@ -357,7 +360,8 @@ runCraft = function(plan)
 				if not (evW == "timer" and aW == tmW) then os.cancelTimer(tmW) end
 			else
 				failReasonByCo[lockOwnerId()] = nil
-				local nkind = node.step.fluid_craft and "fluid" or (node.step.type == "turtle" and "turtle" or "machine")
+				local nkind = node.step.fluid_craft and "fluid"
+				or ((node.step.type == "turtle" or node.step.type == "crafter") and node.step.type or "machine")
 				dbgStart(Craft.jobId, ctx.subId, node.idx, node.step.item, node.step.count or 0, nkind)
 				local ok, err = execStep(node.step, ctx, node)
 				releaseTokens(node.tokens)

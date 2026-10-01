@@ -4,7 +4,8 @@ function listMachines()
 	for _, p in ipairs(all) do
 		if not SYSTEM_SIDES[p] and p ~= MONITOR_SIDE and p ~= Config.train_box
 		and not (Config.turtles and Config.turtles[p]) and not Config.storages[p]
-		and not (Config.fluid_tanks and Config.fluid_tanks[p]) then
+		and not (Config.fluid_tanks and Config.fluid_tanks[p])
+		and not isCrafterRole(p) then
 			table.insert(list, p)
 		end
 	end
@@ -33,6 +34,11 @@ function checkMachine(recipe)
 			if enabled then return true, nil end
 		end
 		return false, "turtle"
+	end
+	if mType == "crafter" then
+		local ok, why = crafterReady(recipe.grid_cells)
+		if ok then return true, nil end
+		return false, why
 	end
 	if recipe.output_device and recipe.output_device ~= "" then
 		if not peripheral.wrap(recipe.output_device) then

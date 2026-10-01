@@ -228,12 +228,15 @@ function drawPlusTab(w, h, touchZones)
 	local turtleTab = (craftSubTab == "TURTLE")
 	local machTab   = (craftSubTab == "MACHINES")
 	local fluidTab  = (craftSubTab == "FLUID")
+	local crafterTab = (craftSubTab == "CRAFTER")
 	if learnState == "IDLE" then
-		UI.subTabs(touchZones, 9, w, {"TURTLE", "MACHINES", "FLUID"}, craftSubTab, "craft_subtab")
+		UI.subTabs(touchZones, 9, w, {"TURTLE", "MACHINES", "FLUID", "CRAFTER"}, craftSubTab, "craft_subtab")
 		UI.rule(11, w)
 		if fluidTab then
 			if not fluidLearnStage then fluidLearnStage = "PICK_INPUT" end
 			drawFluidLearn(w, h, touchZones)
+		elseif crafterTab then
+			drawCrafterLearn(w, h, touchZones)
 		elseif turtleTab then
 			UI.textC(13, w, "Place recipe in center 3x3 of barrel,", UI.C.muted)
 			UI.textC(14, w, "then press SCAN.", UI.C.soft)
@@ -302,7 +305,8 @@ function drawPlusTab(w, h, touchZones)
 		end
 	elseif learnState == "AWAITING_DECISION" and learnedResult then
 		local midY = math.floor(h / 2)
-		local dubInfo = {type = learnedType, machine_name = learnedMach, ingredients = learnedIngs}
+		local dubInfo = {type = learnedType, machine_name = learnedMach, ingredients = learnedIngs,
+			grid_cells = learnedGridCells}
 		if learnAsAlt then
 			local sn = shortName(learnedResult.name)
 			UI.textC(midY - 2, w, "ADD ALTERNATIVE RECIPE", UI.C.accent)
@@ -1097,9 +1101,25 @@ function drawNetTab(w, h, touchZones)
 		_bufClearLine(rowY, rowBg)
 		UI.text(2, rowY, getMachName(p), UI.C.fg, rowBg)
 		local bx = math.max(w - 42, #getMachName(p) + 2)
-		togBtn(bx,      rowY, " [VAULT] ",  Config.storages[p],                          "ok",   "toggle_storage",    p, rowBg)
-		togBtn(bx + 9,  rowY, " [T.BOX] ",  Config.train_box == p,                       "warn", "set_train_box",     p, rowBg)
-		togBtn(bx + 18, rowY, " [TURTLE] ", Config.turtles and Config.turtles[p],        "cool", "set_turtle",        p, rowBg)
+		local cc = crafterCfg()
+		if isRelayPeriph(p) then
+			local clOn = (cc.clutch == p and cc.clutch_side)
+			local puOn = (cc.pulse == p and cc.pulse_side)
+			togBtn(bx,      rowY, clOn and (" [CL:" .. cc.clutch_side .. "] ") or " [CLUTCH] ", clOn, "warn", "crafter_set_clutch", p, rowBg)
+			togBtn(bx + 14, rowY, puOn and (" [PU:" .. cc.pulse_side .. "] ") or " [PULSE] ",  puOn, "cool", "crafter_set_pulse",  p, rowBg)
+		elseif isCrafterPeriph(p) then
+			local ci = crafterCellIdx(p)
+			UI.text(bx + 1, rowY, ci and ("[GRID CELL " .. ci .. "]") or "[NOT IN GRID - DETECT]", ci and UI.C.info or UI.C.warn, rowBg)
+		else
+			togBtn(bx,      rowY, " [VAULT] ",  Config.storages[p],                          "ok",   "toggle_storage",    p, rowBg)
+			togBtn(bx + 9,  rowY, " [T.BOX] ",  Config.train_box == p,                       "warn", "set_train_box",     p, rowBg)
+			local tpp = peripheral.wrap(p)
+			if (Config.turtles and Config.turtles[p]) or (tpp and tpp.craft) then
+				togBtn(bx + 18, rowY, " [TURTLE] ", Config.turtles and Config.turtles[p], "cool", "set_turtle",        p, rowBg)
+			else
+				togBtn(bx + 18, rowY, " [C.OUT] ",  cc.out == p,                          "cool", "crafter_set_out",   p, rowBg)
+			end
+		end
 		local lbl = Machines.label(p)
 		togBtn(bx + 28, rowY, " [SUF] ",    lbl and lbl ~= "",                            "ok",   "machine_label",     p, rowBg)
 		local tankObj = peripheral.wrap(p)

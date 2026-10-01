@@ -6,6 +6,11 @@ local function learnedTools_()
 end
 
 local function buildLearnedRecipe(count, ingredients)
+	local cells = nil
+	if learnedType == "crafter" and learnedGridCells then
+		cells = {}
+		for i, n in ipairs(learnedGridCells) do cells[i] = n end
+	end
 	return {
 		type          = learnedType,
 		machine_name  = learnedMach,
@@ -14,13 +19,18 @@ local function buildLearnedRecipe(count, ingredients)
 		ingredients   = ingredients or learnedIngs,
 		output_device = learnedOut,
 		tools         = learnedTools_(),
+		grid_cells    = cells,
 	}
 end
 
 function _touchAdd(zone, x, y)
 	if zone.id == "add_recipe_action" then
 		sysStatus = "MANUAL_CRAFT"
-		uiMessage = runMachineSearch()
+		if craftSubTab == "CRAFTER" then
+			uiMessage = runCrafterSearch()
+		else
+			uiMessage = runMachineSearch()
+		end
 		sysStatus = "IDLE"
 		pendingTouches = {}
 		return true

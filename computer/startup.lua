@@ -338,9 +338,11 @@ function findDup(outName, cand)
 local function sig(r)
 if type(r) ~= "table" or r.type == "fluid" then return nil end
 local parts = {}
-for i = 1, 9 do parts[i] = tostring(r.ingredients and r.ingredients[i] or "nil") end
-if r.type ~= "turtle" then table.sort(parts) end
-return tostring(r.type) .. "|" .. tostring(r.machine_name) .. "|" .. table.concat(parts, ",")
+local n = (r.type == "crafter") and #(r.ingredients or {}) or 9
+for i = 1, n do parts[i] = tostring(r.ingredients and r.ingredients[i] or "nil") end
+if r.type ~= "turtle" and r.type ~= "crafter" then table.sort(parts) end
+local cells = (r.type == "crafter" and r.grid_cells) and table.concat(r.grid_cells, ",") or ""
+return tostring(r.type) .. "|" .. tostring(r.machine_name) .. "|" .. table.concat(parts, ",") .. "|" .. cells
 end
 
 local target = sig(cand)
@@ -1470,7 +1472,8 @@ local all = peripheral.getNames()
 for _, p in ipairs(all) do
 if not SYSTEM_SIDES[p] and p ~= MONITOR_SIDE and p ~= Config.train_box
 and not (Config.turtles and Config.turtles[p]) and not Config.storages[p]
-and not (Config.fluid_tanks and Config.fluid_tanks[p]) then
+and not (Config.fluid_tanks and Config.fluid_tanks[p])
+and not isCrafterRole(p) then
 table.insert(list, p)
 end
 end
@@ -1499,6 +1502,11 @@ for _, enabled in pairs(Config.turtles or {}) do
 if enabled then return true, nil end
 end
 return false, "turtle"
+end
+if mType == "crafter" then
+local ok, why = crafterReady(recipe.grid_cells)
+if ok then return true, nil end
+return false, why
 end
 if recipe.output_device and recipe.output_device ~= "" then
 if not peripheral.wrap(recipe.output_device) then
@@ -1591,6 +1599,281 @@ ExcludedMachines[name] = nil
 end
 end
 -->40_machines/40_2_registry.lua
+--<40_machines/40_3_crafter.lua
+CRAFTER_MACHINE = "mechanical_crafter"
+CRAFTER_JOB_FILE = "factory_crafter_job.json"
+CRAFTER_TIMEOUT = 180
+CRAFTER_START_WAIT = 6
+RELAY_SIDES = {"top", "bottom", "left", "right", "front", "back"}
+CRAFTER_REMAINDERS = {
+["minecraft:bucket"] = true, ["minecraft:glass_bottle"] = true, ["minecraft:bowl"] = true,
+}
+
+function crafterCfg()
+if type(Config.crafter) ~= "table" then Config.crafter = {} end
+if type(Config.crafter.cells) ~= "table" then Config.crafter.cells = {} end
+return Config.crafter
+end
+
+function isCrafterPeriph(name)
+if type(name) ~= "string" then return false end
+if name:find("mechanical_crafter", 1, true) then return true end
+local ok, has = pcall(peripheral.hasType, name, "create:mechanical_crafter")
+return ok and has == true
+end
+
+function isRelayPeriph(name)
+if type(name) ~= "string" then return false end
+local ok, has = pcall(peripheral.hasType, name, "redstone_relay")
+return ok and has == true
+end
+
+function isCrafterRole(name)
+if isCrafterPeriph(name) then return true end
+local c = Config.crafter
+if type(c) ~= "table" then return false end
+return name == c.out or name == c.clutch or name == c.pulse
+end
+
+local function sufNum(n) return tonumber(n:match("_(%d+)$")) or math.huge end
+
+function detectCrafters()
+local out = {}
+for _, p in ipairs(peripheral.getNames()) do
+if not SYSTEM_SIDES[p] and isCrafterPeriph(p) then out[#out + 1] = p end
+end
+table.sort(out, function(a, b)
+local na, nb = sufNum(a), sufNum(b)
+if na ~= nb then return na < nb end
+return a < b
+end)
+return out
+end
+
+function crafterCellIdx(name)
+for i, n in ipairs(crafterCfg().cells) do
+if n == name then return i end
+end
+return nil
+end
+
+function crafterSetLock(on)
+local c = crafterCfg()
+if not (c.clutch and c.clutch_side) then return false, "clutch relay not set" end
+local r = peripheral.wrap(c.clutch)
+if not (r and r.setOutput) then return false, "clutch relay offline" end
+local ok = pcall(r.setOutput, c.clutch_side, on and true or false)
+if not ok then return false, "clutch relay error" end
+return true
+end
+
+function crafterLocked()
+local c = crafterCfg()
+if not (c.clutch and c.clutch_side) then return nil end
+local r = peripheral.wrap(c.clutch)
+if not (r and r.getOutput) then return nil end
+local ok, v = pcall(r.getOutput, c.clutch_side)
+if not ok then return nil end
+return v and true or false
+end
+
+function crafterPulse()
+local c = crafterCfg()
+if not (c.pulse and c.pulse_side) then return false end
+local r = peripheral.wrap(c.pulse)
+if not (r and r.setOutput) then return false end
+pcall(r.setOutput, c.pulse_side, false)
+sleep(0.1)
+pcall(r.setOutput, c.pulse_side, true)
+sleep(0.3)
+pcall(r.setOutput, c.pulse_side, false)
+return true
+end
+
+function crafterReady(need)
+local c = crafterCfg()
+if #c.cells == 0 then return false, "no crafter grid registered" end
+for _, n in ipairs(c.cells) do
+if not peripheral.wrap(n) then return false, n end
+end
+for _, n in ipairs(need or {}) do
+if not crafterCellIdx(n) then return false, n end
+end
+if not (c.clutch and c.clutch_side) then return false, "clutch relay not set" end
+if not peripheral.wrap(c.clutch) then return false, c.clutch end
+if not c.out then return false, "crafter output not set" end
+if not peripheral.wrap(c.out) then return false, c.out end
+return true
+end
+
+function crafterReadCells()
+local cells = crafterCfg().cells
+local scanned = scanPeriph(cells, "list", true)
+local res = {}
+for i, n in ipairs(cells) do
+local e = scanned[n]
+if not (e and e.data) then return nil, "crafter offline: " .. n end
+if e.size and e.size > 1 then
+return nil, "crafter inputs are linked (wrench) - unlink them"
+end
+local it = e.data[1]
+res[i] = (it and it.name) or "nil"
+end
+return res
+end
+
+local function crafterSleep(t, committed)
+if committed then sleep(t) else sleepCancel(t) end
+end
+
+function crafterWaitStart(loaded, secs, committed, onTick)
+local t, repulsed = 0, false
+while t < secs do
+if onTick then onTick() end
+crafterSleep(0.5, committed)
+t = t + 0.5
+if Craft.cancelled and not committed then return false end
+local cur = crafterReadCells()
+if cur then
+for idx, ing in ipairs(loaded) do
+if ing ~= "nil" and cur[idx] == "nil" then return true end
+end
+end
+if not repulsed and t >= 2.5 then
+repulsed = true
+crafterPulse()
+end
+end
+return false
+end
+
+function crafterStart(loaded, committed, onTick)
+local ok, err = crafterSetLock(false)
+if not ok then return false, err end
+crafterSleep(0.6, committed)
+crafterPulse()
+return crafterWaitStart(loaded, CRAFTER_START_WAIT, committed, onTick)
+end
+
+function crafterJobSave(job)
+local ok, data = pcall(textutils.serializeJSON, job)
+if not (ok and type(data) == "string") then return end
+local fh = fs.open(CRAFTER_JOB_FILE, "w")
+if fh then fh.write(data); fh.close() end
+end
+
+function crafterJobLoad()
+if not fs.exists(CRAFTER_JOB_FILE) then return nil end
+local fh = fs.open(CRAFTER_JOB_FILE, "r")
+if not fh then return nil end
+local raw = fh.readAll() or ""
+fh.close()
+local ok, j = pcall(textutils.unserializeJSON, raw)
+if ok and type(j) == "table" and type(j.item) == "string"
+and type(j.ings) == "table" and type(j.cells) == "table" then return j end
+return nil
+end
+
+function crafterJobClear()
+if fs.exists(CRAFTER_JOB_FILE) then fs.delete(CRAFTER_JOB_FILE) end
+end
+
+function crafterGridEmpty(cur)
+for _, v in ipairs(cur) do if v ~= "nil" then return false end end
+return true
+end
+
+function crafterResidueTarget(cur)
+local function fits(ings, cells, exact)
+local covered = {}
+for k, cell in ipairs(cells) do
+local gi = crafterCellIdx(cell)
+if not gi then return false end
+covered[gi] = true
+local have, want = cur[gi], ings[k] or "nil"
+if have ~= "nil" and have ~= want then
+if exact or want == "nil" then return false end
+local alt = false
+for _, a in ipairs(Groups.altsOf(want) or {}) do
+if a == have then alt = true; break end
+end
+if not alt then return false end
+end
+end
+for gi, have in ipairs(cur) do
+if have ~= "nil" and not covered[gi] then return false end
+end
+return true
+end
+local job = crafterJobLoad()
+if job and fits(job.ings, job.cells, true) then
+return {item = job.item, ings = job.ings, cells = job.cells, perOp = job.perOp or 1, fromJob = true}
+end
+local found, items = {}, {}
+local function consider(name, r)
+if type(r) == "table" and r.type == "crafter" and type(r.grid_cells) == "table"
+and fits(r.ingredients or {}, r.grid_cells, false) then
+found[#found + 1] = {item = name, ings = r.ingredients, cells = r.grid_cells, perOp = r.output_count or 1}
+items[name] = true
+end
+end
+for name, r in pairs(Recipe.all()) do consider(name, r) end
+for name, alts in pairs(Recipe.allAlts()) do
+for _, r in ipairs(alts) do consider(name, r) end
+end
+local nItems = 0
+for _ in pairs(items) do nItems = nItems + 1 end
+if nItems == 1 then return found[1] end
+if nItems == 0 then return nil, "no known crafter recipe matches the grid" end
+return nil, nItems .. " recipes match the grid - empty it by hand"
+end
+
+function crafterOutList()
+local c = crafterCfg()
+local o = c.out and peripheral.wrap(c.out)
+if not (o and o.list) then return {} end
+local ok, items = pcall(o.list)
+return (ok and items) or {}
+end
+
+function crafterDrainOut(dstNames)
+local c = crafterCfg()
+local got = {}
+local o = c.out and peripheral.wrap(c.out)
+if not (o and o.pushItems) then return got end
+local dsts = {}
+for _, s in ipairs(dstNames) do if s ~= c.out then dsts[#dsts + 1] = s end end
+for slot, it in pairs(crafterOutList()) do
+if it and (it.count or 0) > 0 then
+local left = it.count
+for _, s in ipairs(packOrder(it.name, dsts)) do
+if left <= 0 then break end
+local okP, mv = pcall(o.pushItems, s, slot, left)
+if okP and type(mv) == "number" and mv > 0 then
+left = left - mv
+packRemember(it.name, s)
+got[it.name] = (got[it.name] or 0) + mv
+end
+end
+end
+end
+if next(got) then resetStock() end
+return got
+end
+
+function crafterPickResult(agg)
+local best, bestN = nil, -1
+for nm, cnt in pairs(agg) do
+if not CRAFTER_REMAINDERS[nm] and cnt > bestN then best, bestN = nm, cnt end
+end
+if not best then
+for nm, cnt in pairs(agg) do
+if cnt > bestN then best, bestN = nm, cnt end
+end
+end
+return best, bestN
+end
+-->40_machines/40_3_crafter.lua
 --<50_render/50_0_primitives.lua
 _COLOR_BLIT = {
 [colors.white]     = "0", [colors.orange]    = "1",
@@ -2172,6 +2455,10 @@ return total
 end
 
 function clearLearn()
+if learnedType == "crafter" then
+pcall(crafterSetLock, true)
+return
+end
 if learnedType ~= "turtle" then return end
 if not (Config.train_box and Config.train_box ~= "") then return end
 local tb = peripheral.wrap(Config.train_box)
@@ -2332,7 +2619,7 @@ end
 end
 if allowPartial and not allOk then
 local maxN = craftsCount
-if recipe.type == "turtle" then
+if recipe.type == "turtle" or recipe.type == "crafter" then
 for ingName, ingPerCraft in pairs(ingCounts) do
 if not toolSet[ingName] then
 local ingAvail = groupAvail(ingName, stock)
@@ -2382,7 +2669,8 @@ machine_name = recipe.machine_name,
 ingredients = recipe.ingredients,
 output_count = recipe.output_count or 1,
 output_device = recipe.output_device,
-tools = recipe.tools
+tools = recipe.tools,
+grid_cells = recipe.grid_cells,
 })
 visited[itemName] = nil
 end
@@ -2632,6 +2920,7 @@ if step.fluid_craft then
 return fluidRecipeTokens(step.fluidRecipe)
 end
 if step.type == "turtle" then return { "TURTLE" } end
+if step.type == "crafter" then return { "CRAFTER" } end
 if step.output_device and step.output_device ~= "" then
 local toks = {}
 local seen = {}
@@ -4233,6 +4522,9 @@ if not _execStepFluid(step, ctx, node, finalGoal, sortedStore, myCleanup) then r
 elseif step.type == "turtle" then
 if not _execStepTurtle(step, ctx, node, state) then return false end
 myCleanup = state.myCleanup
+elseif step.type == "crafter" then
+if not _execStepCrafter(step, ctx, node, state) then return false end
+myCleanup = state.myCleanup
 else
 if not _execStepMachine(step, ctx, node, state) then return false end
 myCleanup = state.myCleanup
@@ -4472,7 +4764,8 @@ local evW, aW = os.pullEvent()
 if not (evW == "timer" and aW == tmW) then os.cancelTimer(tmW) end
 else
 failReasonByCo[lockOwnerId()] = nil
-local nkind = node.step.fluid_craft and "fluid" or (node.step.type == "turtle" and "turtle" or "machine")
+local nkind = node.step.fluid_craft and "fluid"
+or ((node.step.type == "turtle" or node.step.type == "crafter") and node.step.type or "machine")
 dbgStart(Craft.jobId, ctx.subId, node.idx, node.step.item, node.step.count or 0, nkind)
 local ok, err = execStep(node.step, ctx, node)
 releaseTokens(node.tokens)
@@ -4740,6 +5033,308 @@ dbgWrite(string.format("j=%d s=%d leftover idx=%d mach=%s item=%s count=%d",
 jid or 0, sid or 0, idx or 0, tostring(mach), shortItem(item), count or 0))
 end
 -->60_craft/60_7_dbglog.lua
+--<60_craft/60_8_engine_crafter.lua
+
+CRAFTER_HAND_EMPTY = "Take items back: empty-hand right-click each crafter front."
+
+local function crafterFail(title, lines, reason)
+craftErrTitle = title
+craftErrLines = lines
+failReason(reason)
+pcall(crafterSetLock, true)
+return false
+end
+
+local function crafterAlloc(need, scanNames)
+local prescan = scanPeriph(scanNames, "list")
+local avail = {}
+for _, n in ipairs(scanNames) do
+local e = prescan[n]
+if e and e.data then
+for _, it in pairs(e.data) do
+if it then avail[it.name] = (avail[it.name] or 0) + (it.count or 0) end
+end
+end
+end
+local bstock = nil
+local pick, short = {}, {}
+for _, n in ipairs(need) do
+local cands = { n.ing }
+for _, a in ipairs(Groups.altsOf(n.ing) or {}) do
+if a ~= n.ing then cands[#cands + 1] = a end
+end
+for _, c in ipairs(cands) do
+if (avail[c] or 0) <= 0 then
+bstock = bstock or bridgeStock()
+if (bstock[c] or 0) > 0 then avail[c] = bstock[c]; bstock[c] = 0 end
+end
+if (avail[c] or 0) > 0 then
+avail[c] = avail[c] - 1
+pick[n.k] = c
+break
+end
+end
+if not pick[n.k] then short[n.ing] = (short[n.ing] or 0) + 1 end
+end
+if next(short) then return nil, short end
+return pick, prescan
+end
+
+local function crafterPushOne(name, cell, prescan, scanNames)
+local dst = peripheral.wrap(cell)
+for pass = 1, 2 do
+local scanned = (pass == 1 and prescan) or scanPeriph(scanNames, "list")
+for _, stoName in ipairs(scanNames) do
+local e = scanned[stoName]
+local sto = e and e.data and peripheral.wrap(stoName)
+if sto and sto.getItemDetail then
+for slot, it in pairs(e.data) do
+if it and it.name == name then
+local okD, det = pcall(sto.getItemDetail, slot)
+if okD and det and det.name == name and (det.count or 0) > 0 then
+local okP, mv = false, 0
+if sto.pushItems then
+okP, mv = pcall(sto.pushItems, cell, slot, 1, 1)
+elseif dst and dst.pullItems then
+okP, mv = pcall(dst.pullItems, stoName, slot, 1, 1)
+end
+if okP and type(mv) == "number" and mv > 0 then
+resetStock()
+return true
+end
+if okP then return false end
+end
+end
+end
+end
+end
+end
+return (bridgeFeed(name, 1, cell, 1) or 0) > 0
+end
+
+local function crafterAwaitOut(want, target, onTick)
+local t, prevSig, stable = 0, nil, 0
+while t < CRAFTER_TIMEOUT do
+if onTick then onTick() end
+sleep(0.5)
+t = t + 0.5
+local sig, have = {}, 0
+for _, it in pairs(crafterOutList()) do
+if it then
+sig[#sig + 1] = it.name .. "=" .. (it.count or 0)
+if it.name == target then have = have + (it.count or 0) end
+end
+end
+table.sort(sig)
+local s = table.concat(sig, ",")
+if s == prevSig then stable = stable + 1 else stable = 0 end
+prevSig = s
+if have >= want and stable >= 1 then return true end
+end
+return false
+end
+
+function crafterRunCycle(tgt, cur, dstNames, scanNames, onTick)
+local c = crafterCfg()
+local loaded = {}
+for gi = 1, #c.cells do loaded[gi] = cur[gi] or "nil" end
+local need, planned = {}, {}
+for k, cell in ipairs(tgt.cells) do
+local gi = crafterCellIdx(cell)
+local want = tgt.ings[k] or "nil"
+planned[k] = (gi and cur[gi] ~= "nil") and cur[gi] or want
+if gi and want ~= "nil" and cur[gi] == "nil" then
+need[#need + 1] = {k = k, ing = want, cell = cell, gi = gi}
+end
+end
+local itemShort = shortName(tgt.item)
+
+if #need > 0 then
+local pick, prescan = crafterAlloc(need, scanNames)
+if not pick then return false, nil, nil, prescan end
+for _, n in ipairs(need) do planned[n.k] = pick[n.k] end
+crafterJobSave({item = tgt.item, ings = planned, cells = tgt.cells, perOp = tgt.perOp})
+for _, n in ipairs(need) do
+if onTick then onTick() end
+local nm = pick[n.k]
+if not crafterPushOne(nm, n.cell, prescan, scanNames) then
+return false, {
+title = "! CRAFTER LOAD FAILED",
+lines = {
+"Couldn't insert " .. shortName(nm) .. " into " .. getMachName(n.cell),
+"(slot cover? crafter busy?). Grid is part-loaded + LOCKED.",
+"[FINISH GRID] in +RECIPES > CRAFTER retries it.",
+CRAFTER_HAND_EMPTY,
+},
+reason = "crafter.load_failed cell=" .. tostring(n.cell),
+}
+end
+loaded[n.gi] = nm
+end
+else
+crafterJobSave({item = tgt.item, ings = planned, cells = tgt.cells, perOp = tgt.perOp})
+end
+
+local started, sErr = crafterStart(loaded, true, onTick)
+if not started then
+local lines = {"Grid loaded for " .. itemShort .. " but it never began."}
+lines[#lines + 1] = sErr and tostring(sErr) or "Empty cells need a PULSE relay or slot covers."
+lines[#lines + 1] = "Items stay in the grid. [FINISH GRID] retries it."
+return false, {title = "! CRAFTER DIDN'T START", lines = lines,
+reason = "crafter.no_start item=" .. tostring(itemShort)}
+end
+crafterJobClear()
+
+local okOut = crafterAwaitOut(tgt.perOp or 1, tgt.item, onTick)
+local got = crafterDrainOut(dstNames)
+if not okOut then
+local lines = {
+"No " .. itemShort .. " after " .. CRAFTER_TIMEOUT .. "s.",
+"Wrong recipe/layout: create drops the",
+"items at the crafters. Check the floor.",
+}
+if next(got) then lines[#lines + 1] = "Got something else instead (in vaults)." end
+return false, {title = "! CRAFTER NO OUTPUT", lines = lines,
+reason = "crafter.no_output item=" .. tostring(itemShort)}, got
+end
+return true, nil, got
+end
+
+function _execStepCrafter(step, ctx, node, state)
+local sortedStore = state.sortedStore
+local helpers     = state.helpers
+local plan, i     = state.plan, state.i
+local desc        = state.desc
+local ings  = step.ingredients or {}
+local cells = step.grid_cells or {}
+local itemShort = shortName(step.item)
+state.myCleanup = {}
+
+if #ings == 0 or #ings ~= #cells then
+return crafterFail("! CRAFTER RECIPE BROKEN", {
+"Recipe for " .. itemShort .. " has no cell map.",
+"Re-learn it in +RECIPES > CRAFTER.",
+}, "crafter.bad_recipe item=" .. tostring(itemShort))
+end
+local okR, why = crafterReady(cells)
+if not okR then
+return crafterFail("! CRAFTER NOT READY", {
+"Required for: " .. itemShort, tostring(why),
+"Check grid/relay/output in +RECIPES > CRAFTER.",
+}, "crafter.not_ready " .. tostring(why))
+end
+local c = crafterCfg()
+Craft.usedMachines[c.out] = true
+
+local ingNeed = {}
+for _, ing in ipairs(ings) do
+if ing ~= "nil" then ingNeed[ing] = (ingNeed[ing] or 0) + 1 end
+end
+releaseTokens(node.tokens)
+local okI, errI, missIng = ensureIngs(step, ingNeed)
+if not okI then
+craftErrTitle = "! NEED"
+craftErrLines = errI or {"Can't make " .. itemShort}
+failReason("crafter.ing_topup_failed item=" .. tostring(shortName(missIng)))
+return false
+end
+while not Craft.cancelled and not ctx.failed do
+if acquireTokens(node.tokens) then break end
+sleepYield(0.2, ctx)
+end
+if Craft.cancelled or ctx.failed then
+failReason(Craft.cancelled and "crafter.cancel_before_run" or "crafter.ctx_failed_before_run")
+return false
+end
+
+local perOp     = step.output_count or 1
+local totalNeed = step.count or 0
+local totalDone = 0
+local dry = 0
+local scanNames = scanStorage()
+
+local function tick()
+local d = Craft.cancelled and (desc .. " (finishing cycle)") or desc
+helpers.drawProgress(i, #plan, d, totalDone, totalNeed, step.item, 1)
+end
+
+while totalDone < totalNeed do
+if Craft.cancelled then failReason("crafter.cancel"); pcall(crafterSetLock, true); return false end
+tick()
+
+local okL, lockErr = crafterSetLock(true)
+if not okL then
+return crafterFail("! CRAFTER CLUTCH", {tostring(lockErr)}, "crafter.lock " .. tostring(lockErr))
+end
+crafterDrainOut(sortedStore)
+
+local cur, rErr = crafterReadCells()
+if not cur then
+return crafterFail("! CRAFTER GRID", {tostring(rErr)}, "crafter.read " .. tostring(rErr))
+end
+
+local tgt, residue
+if crafterGridEmpty(cur) then
+tgt = {item = step.item, ings = ings, cells = cells, perOp = perOp}
+else
+local whyR
+tgt, whyR = crafterResidueTarget(cur)
+if not tgt then
+local dirty = {}
+for idx, v in ipairs(cur) do
+if v ~= "nil" then dirty[#dirty + 1] = shortName(v) .. "@" .. idx end
+end
+return crafterFail("! CRAFTER GRID NOT EMPTY", {
+"Crafters hold items the computer can't pull out:",
+table.concat(dirty, ", "):sub(1, 60),
+tostring(whyR) .. ".",
+CRAFTER_HAND_EMPTY,
+}, "crafter.grid_dirty n=" .. #dirty)
+end
+residue = true
+dbgWrite(string.format("j=%d s=%d crafter.residue idx=%d target=%s job=%s",
+Craft.jobId or 0, ctx.subId or 0, node.idx or 0, shortName(tgt.item), tostring(tgt.fromJob)))
+end
+
+local ok, err, got, short = crafterRunCycle(tgt, cur, sortedStore, scanNames, tick)
+if ok then
+dry = 0
+if tgt.item == step.item then
+local made = got[step.item] or 0
+local ops = math.max(1, math.floor(made / perOp))
+if ops > totalNeed - totalDone then ops = totalNeed - totalDone end
+totalDone = totalDone + ops
+dbgPush(Craft.jobId, ctx.subId, node.idx, step.item, made,
+totalDone * perOp, totalNeed * perOp, 0, 0, CRAFTER_MACHINE)
+end
+elseif short then
+local parts = {}
+for ing, n in pairs(short) do parts[#parts + 1] = string.format("%dx %s", n, shortName(ing)) end
+if residue then
+local lines = {"Grid holds part of " .. shortName(tgt.item) .. ", can't finish it."}
+appendMissing(lines, parts)
+lines[#lines + 1] = "Stock up and retry, or empty the grid."
+lines[#lines + 1] = CRAFTER_HAND_EMPTY
+return crafterFail("! CRAFTER LEFTOVER", lines, "crafter.residue_short item=" .. tostring(shortName(tgt.item)))
+end
+for ing, n in pairs(short) do bridgeStage(ing, n * (totalNeed - totalDone)) end
+dry = dry + 1
+if dry >= 3 then
+local lines = {"Can't load grid for " .. itemShort}
+appendMissing(lines, parts)
+return crafterFail("! NEED", lines, "crafter.no_stock item=" .. tostring(itemShort))
+end
+resetStock()
+sleepCancel(1.0)
+else
+return crafterFail(err.title, err.lines, err.reason)
+end
+end
+pcall(crafterSetLock, true)
+tick()
+return true
+end
+-->60_craft/60_8_engine_crafter.lua
 --<60_craft/60_a_state.lua
 function resetErr() craftErrLines = {}; craftErrTitle = nil end
 resetErr()
@@ -5065,6 +5660,7 @@ end
 
 function hasCustomIO(rec)
 if type(rec) ~= "table" then return false end
+if rec.type == "crafter" then return true end
 if rec.output_device       and rec.output_device       ~= "" then return true end
 if rec.item_input_device   and rec.item_input_device   ~= "" then return true end
 if rec.fluid_input_device  and rec.fluid_input_device  ~= "" then return true end
@@ -7504,6 +8100,200 @@ return "ERR: Process failed!"
 end
 end
 -->80_ui/80_2_learn.lua
+--<80_ui/80_2_learn_crafter.lua
+learnedGridCells = nil
+
+local function crafterLearnPopup(stage, noCancel)
+local w, h = monitor.getSize()
+local pW, pH = math.min(w - 6, 56), 9
+local pX, pY = UI.popup(pW, pH, w, h, " CRAFTER LEARNING ", "warn")
+drawText(pX + 2, pY + 3, ("STATUS: " .. stage):sub(1, pW - 4), colors.lightGray, colors.gray)
+if noCancel then
+craftCancelY = nil
+_bufFlush()
+return
+end
+local cancStr = " [ CANCEL ] "
+local cancX = pX + math.floor((pW - #cancStr) / 2)
+drawText(cancX, pY + pH - 2, cancStr, colors.white, colors.red)
+craftCancelY  = pY + pH - 2
+craftCancelX1 = cancX
+craftCancelX2 = cancX + #cancStr - 1
+_bufFlush()
+end
+
+local function toTrainOrVault(got)
+local c = crafterCfg()
+local o = peripheral.wrap(c.out)
+if not (o and o.pushItems) then return end
+for slot, it in pairs(crafterOutList()) do
+if it then
+local moved = 0
+if Config.train_box and Config.train_box ~= "" then
+for _, bSlot in ipairs(TRAINBOX_SAFE_SLOTS) do
+local ok, mv = pcall(o.pushItems, Config.train_box, slot, it.count, bSlot)
+if ok and type(mv) == "number" then moved = moved + mv end
+if moved >= it.count then break end
+end
+end
+if moved < it.count then
+for _, s in ipairs(pushStoList()) do
+local ok, mv = pcall(o.pushItems, s, slot, it.count - moved)
+if ok and type(mv) == "number" then moved = moved + mv end
+if moved >= it.count then break end
+end
+end
+end
+end
+resetStock()
+end
+
+function runCrafterSearch()
+local ok, why = crafterReady()
+if not ok then return "ERR: crafter " .. tostring(why) end
+local ings, rErr = crafterReadCells()
+if not ings then return "ERR: " .. tostring(rErr) end
+local any = false
+for _, v in ipairs(ings) do if v ~= "nil" then any = true; break end end
+if not any then return "ERR: Crafter grid empty!" end
+
+Craft.cancelled = false
+learnedResult, learnedOutputs, learnedTools = nil, nil, {}
+crafterLearnPopup("Clearing crafter output...")
+crafterDrainOut(pushStoList())
+if next(crafterOutList()) then
+return "ERR: crafter output not empty (vaults full?)"
+end
+
+crafterLearnPopup("Starting crafters...", true)
+local started, sErr = crafterStart(ings, true)
+if not started then
+pcall(crafterSetLock, true); craftCancelY = nil
+if sErr then return "ERR: " .. tostring(sErr) end
+return "ERR: crafters didn't start (empty cells need PULSE)"
+end
+
+local t, prevSig, stable, agg = 0, nil, 0, nil
+while t < CRAFTER_TIMEOUT do
+crafterLearnPopup(string.format("Waiting for result... %ds", math.floor(t)))
+sleepCancel(0.5)
+t = t + 0.5
+if Craft.cancelled then break end
+local cur, sig = {}, {}
+for _, it in pairs(crafterOutList()) do
+if it then
+cur[it.name] = (cur[it.name] or 0) + (it.count or 0)
+sig[#sig + 1] = it.name .. "=" .. (it.count or 0)
+end
+end
+table.sort(sig)
+local s = table.concat(sig, ",")
+if s ~= "" and s == prevSig then stable = stable + 1 else stable = 0 end
+prevSig = s
+if stable >= 2 then agg = cur; break end
+end
+craftCancelY = nil
+if Craft.cancelled then
+return "Learning cancelled. Result lands in crafter output."
+end
+if not agg then
+pcall(crafterSetLock, true)
+return "ERR: no result (invalid recipe? items dropped at crafters)"
+end
+
+local name, cnt = crafterPickResult(agg)
+toTrainOrVault(agg)
+pcall(crafterSetLock, true)
+
+learnedIngs      = ings
+learnedGridCells = {}
+for i, n in ipairs(crafterCfg().cells) do learnedGridCells[i] = n end
+learnedType   = "crafter"
+learnedMach   = CRAFTER_MACHINE
+learnedOut    = nil
+learnedResult = {name = name, count = cnt}
+learnState    = "AWAITING_DECISION"
+for hi = #craftHistory, 1, -1 do
+if craftHistory[hi].item == name then table.remove(craftHistory, hi) end
+end
+table.insert(craftHistory, 1, {item = name, qty = cnt or 1})
+if #craftHistory > 30 then table.remove(craftHistory) end
+return "Success! Confirm entry."
+end
+
+function drawCrafterLearn(w, h, touchZones)
+local c = crafterCfg()
+local y = 13
+local nOn = 0
+for _, n in ipairs(c.cells) do if peripheral.wrap(n) then nOn = nOn + 1 end end
+local found = #detectCrafters()
+local gridCol = (#c.cells > 0 and nOn == #c.cells) and UI.C.accent or UI.C.danger
+UI.text(2, y, string.format("Grid:   %d crafters registered (%d online, %d on network)",
+#c.cells, nOn, found), gridCol)
+UI.btnR(touchZones, w - 1, y, " [DETECT GRID] ", found ~= #c.cells and "warn" or "mute", "crafter_detect")
+
+local function devLine(yy, label, name, side)
+local on = name and peripheral.wrap(name)
+local txt = name and (getMachName(name) .. (side and (" @" .. side) or "")) or "<not set - tag in NETWORK>"
+UI.text(2, yy, label, UI.C.muted)
+UI.text(10, yy, txt:sub(1, w - 12), name and (on and UI.C.fg or UI.C.danger) or UI.C.danger)
+end
+devLine(y + 1, "Clutch:", c.clutch, c.clutch_side)
+devLine(y + 2, "Pulse:",  c.pulse,  c.pulse_side)
+if not c.pulse then UI.text(10, y + 2, "<optional - needed for recipes with empty cells>", UI.C.muted) end
+devLine(y + 3, "Output:", c.out)
+
+local lk = crafterLocked()
+local lkS, lkStyle = " [ NO RELAY ] ", "mute"
+if lk == true then lkS, lkStyle = " [ LOCKED - place recipe ] ", "warn"
+elseif lk == false then lkS, lkStyle = " [ RUNNING - tap to LOCK ] ", "ok" end
+UI.btn(touchZones, math.floor((w - #lkS) / 2) + 1, y + 5, lkS, lkStyle, "crafter_lock_toggle")
+
+local job = crafterJobLoad()
+local fS = " [ FINISH GRID ] "
+local cS = " [ FORGET ] "
+local msg = job and ("Unfinished cycle: " .. shortName(job.item) .. "  ") or "Grid left part-loaded?  "
+local rowW = #msg + #fS + (job and (1 + #cS) or 0)
+local x0 = math.max(2, math.floor((w - rowW) / 2) + 1)
+UI.text(x0, y + 6, msg, job and UI.C.hi or UI.C.muted)
+UI.btn(touchZones, x0 + #msg, y + 6, fS, job and "warn" or "mute", "crafter_finish")
+if job then UI.btn(touchZones, x0 + #msg + #fS + 1, y + 6, cS, "mute", "crafter_forget") end
+
+UI.textC(y + 7, w, "LOCK, place the recipe into the crafters, then SCAN.", UI.C.muted)
+UI.textC(y + 8, w, "Crafter inputs must NOT be wrench-connected.", UI.C.soft)
+end
+
+function runCrafterFinish()
+local ok, why = crafterReady()
+if not ok then return "ERR: crafter " .. tostring(why) end
+local cur, rErr = crafterReadCells()
+if not cur then return "ERR: " .. tostring(rErr) end
+if crafterGridEmpty(cur) then
+crafterJobClear()
+return "Grid is already empty."
+end
+local tgt, tErr = crafterResidueTarget(cur)
+if not tgt then return "ERR: " .. tostring(tErr) end
+Craft.cancelled = false
+crafterSetLock(true)
+crafterDrainOut(pushStoList())
+local function tick() crafterLearnPopup("Finishing " .. shortName(tgt.item) .. " (can't be cancelled)...", true) end
+tick()
+local okC, err, got, short = crafterRunCycle(tgt, cur, pushStoList(), scanStorage(), tick)
+craftCancelY = nil
+pcall(crafterSetLock, true)
+if okC then
+return "Finished: " .. ((got and got[tgt.item]) or 0) .. "x " .. shortName(tgt.item) .. " -> vaults"
+end
+if short then
+local parts = {}
+for ing, n in pairs(short) do parts[#parts + 1] = n .. "x " .. shortName(ing) end
+table.sort(parts)
+return "ERR: need " .. table.concat(parts, ", ")
+end
+return "ERR: " .. tostring(err and err.lines and err.lines[1] or "cycle failed")
+end
+-->80_ui/80_2_learn_crafter.lua
 --<80_ui/80_3_screens_tabs.lua
 
 function getMods()
@@ -7733,12 +8523,15 @@ function drawPlusTab(w, h, touchZones)
 local turtleTab = (craftSubTab == "TURTLE")
 local machTab   = (craftSubTab == "MACHINES")
 local fluidTab  = (craftSubTab == "FLUID")
+local crafterTab = (craftSubTab == "CRAFTER")
 if learnState == "IDLE" then
-UI.subTabs(touchZones, 9, w, {"TURTLE", "MACHINES", "FLUID"}, craftSubTab, "craft_subtab")
+UI.subTabs(touchZones, 9, w, {"TURTLE", "MACHINES", "FLUID", "CRAFTER"}, craftSubTab, "craft_subtab")
 UI.rule(11, w)
 if fluidTab then
 if not fluidLearnStage then fluidLearnStage = "PICK_INPUT" end
 drawFluidLearn(w, h, touchZones)
+elseif crafterTab then
+drawCrafterLearn(w, h, touchZones)
 elseif turtleTab then
 UI.textC(13, w, "Place recipe in center 3x3 of barrel,", UI.C.muted)
 UI.textC(14, w, "then press SCAN.", UI.C.soft)
@@ -7807,7 +8600,8 @@ if uiMessage ~= "" then UI.textC(h - 2, w, uiMessage, UI.C.fg) end
 end
 elseif learnState == "AWAITING_DECISION" and learnedResult then
 local midY = math.floor(h / 2)
-local dubInfo = {type = learnedType, machine_name = learnedMach, ingredients = learnedIngs}
+local dubInfo = {type = learnedType, machine_name = learnedMach, ingredients = learnedIngs,
+grid_cells = learnedGridCells}
 if learnAsAlt then
 local sn = shortName(learnedResult.name)
 UI.textC(midY - 2, w, "ADD ALTERNATIVE RECIPE", UI.C.accent)
@@ -8602,9 +9396,25 @@ local rowBg = zebraBg(idx)
 _bufClearLine(rowY, rowBg)
 UI.text(2, rowY, getMachName(p), UI.C.fg, rowBg)
 local bx = math.max(w - 42, #getMachName(p) + 2)
+local cc = crafterCfg()
+if isRelayPeriph(p) then
+local clOn = (cc.clutch == p and cc.clutch_side)
+local puOn = (cc.pulse == p and cc.pulse_side)
+togBtn(bx,      rowY, clOn and (" [CL:" .. cc.clutch_side .. "] ") or " [CLUTCH] ", clOn, "warn", "crafter_set_clutch", p, rowBg)
+togBtn(bx + 14, rowY, puOn and (" [PU:" .. cc.pulse_side .. "] ") or " [PULSE] ",  puOn, "cool", "crafter_set_pulse",  p, rowBg)
+elseif isCrafterPeriph(p) then
+local ci = crafterCellIdx(p)
+UI.text(bx + 1, rowY, ci and ("[GRID CELL " .. ci .. "]") or "[NOT IN GRID - DETECT]", ci and UI.C.info or UI.C.warn, rowBg)
+else
 togBtn(bx,      rowY, " [VAULT] ",  Config.storages[p],                          "ok",   "toggle_storage",    p, rowBg)
 togBtn(bx + 9,  rowY, " [T.BOX] ",  Config.train_box == p,                       "warn", "set_train_box",     p, rowBg)
-togBtn(bx + 18, rowY, " [TURTLE] ", Config.turtles and Config.turtles[p],        "cool", "set_turtle",        p, rowBg)
+local tpp = peripheral.wrap(p)
+if (Config.turtles and Config.turtles[p]) or (tpp and tpp.craft) then
+togBtn(bx + 18, rowY, " [TURTLE] ", Config.turtles and Config.turtles[p], "cool", "set_turtle",        p, rowBg)
+else
+togBtn(bx + 18, rowY, " [C.OUT] ",  cc.out == p,                          "cool", "crafter_set_out",   p, rowBg)
+end
+end
 local lbl = Machines.label(p)
 togBtn(bx + 28, rowY, " [SUF] ",    lbl and lbl ~= "",                            "ok",   "machine_label",     p, rowBg)
 local tankObj = peripheral.wrap(p)
@@ -10237,7 +11047,7 @@ function _touchRecipes(zone, x, y)
 if zone.id == "craft_subtab" then
 craftSubTab = zone.arg
 craftDevPage = 1
-if zone.arg == "TURTLE" then
+if zone.arg == "TURTLE" or zone.arg == "CRAFTER" then
 selCraftType = "turtle"
 selOut = nil
 outPickMode = false
@@ -10251,6 +11061,33 @@ fluidLearnPage = 1
 fluidScanStatus = ""
 else
 fluidLearnStage = nil
+end
+return true
+elseif zone.id == "crafter_detect" then
+local found = detectCrafters()
+crafterCfg().cells = found
+saveData()
+uiMessage = "Crafter grid: " .. #found .. " cells. Recipes use this cell list."
+if uiMsgTimer then os.cancelTimer(uiMsgTimer) end
+uiMsgTimer = os.startTimer(4)
+return true
+elseif zone.id == "crafter_finish" then
+sysStatus = "MANUAL_CRAFT"
+uiMessage = runCrafterFinish()
+sysStatus = "IDLE"
+pendingTouches = {}
+return true
+elseif zone.id == "crafter_forget" then
+crafterJobClear()
+uiMessage = "Forgot unfinished cycle. Empty the grid by hand if needed."
+return true
+elseif zone.id == "crafter_lock_toggle" then
+local lk = crafterLocked()
+if lk == nil then
+uiMessage = "ERR: tag a redstone relay as [CLUTCH] in NETWORK"
+else
+local ok, err = crafterSetLock(not lk)
+if not ok then uiMessage = "ERR: " .. tostring(err) end
 end
 return true
 elseif zone.id == "craft_dev_prev" then
@@ -11042,6 +11879,38 @@ if not Config.turtles then Config.turtles = {} end
 Config.turtles[zone.arg] = true
 saveData()
 return true
+elseif zone.id == "crafter_set_clutch" or zone.id == "crafter_set_pulse" then
+local c = crafterCfg()
+local key = (zone.id == "crafter_set_clutch") and "clutch" or "pulse"
+local sideKey = key .. "_side"
+local nextSide = RELAY_SIDES[1]
+if c[key] == zone.arg and c[sideKey] then
+nextSide = nil
+for si, s in ipairs(RELAY_SIDES) do
+if s == c[sideKey] then nextSide = RELAY_SIDES[si + 1]; break end
+end
+end
+local r = peripheral.wrap(zone.arg)
+if c[key] == zone.arg and c[sideKey] and r and r.setOutput then pcall(r.setOutput, c[sideKey], false) end
+if nextSide then
+c[key], c[sideKey] = zone.arg, nextSide
+if key == "clutch" then pcall(crafterSetLock, true) end
+else
+c[key], c[sideKey] = nil, nil
+end
+saveData()
+return true
+elseif zone.id == "crafter_set_out" then
+local c = crafterCfg()
+if c.out == zone.arg then
+c.out = nil
+else
+c.out = zone.arg
+Config.storages[zone.arg] = nil
+if Config.train_box == zone.arg then Config.train_box = nil end
+end
+saveData()
+return true
 end
 return false
 end
@@ -11401,7 +12270,14 @@ local missSteps = {}
 if plan and #plan > 0 then
 local seen = {}
 for _, step in ipairs(plan) do
-if step.type ~= "turtle" and step.machine_name and step.machine_name ~= ""
+if step.type == "crafter" and step.count and step.count > 0 then
+local okC, whyC = crafterReady(step.grid_cells)
+if not okC and not seen["crafter:" .. tostring(whyC)] then
+seen["crafter:" .. tostring(whyC)] = true
+table.insert(missMachines, tostring(whyC))
+table.insert(missSteps, step.item)
+end
+elseif step.type ~= "turtle" and step.machine_name and step.machine_name ~= ""
 and step.count and step.count > 0 then
 local isSplit = (step.output_device and step.output_device ~= "")
 local pool
@@ -11532,6 +12408,11 @@ return t
 end
 
 local function buildLearnedRecipe(count, ingredients)
+local cells = nil
+if learnedType == "crafter" and learnedGridCells then
+cells = {}
+for i, n in ipairs(learnedGridCells) do cells[i] = n end
+end
 return {
 type          = learnedType,
 machine_name  = learnedMach,
@@ -11540,13 +12421,18 @@ method        = (learnedType == "turtle") and "turtle" or learnedMach,
 ingredients   = ingredients or learnedIngs,
 output_device = learnedOut,
 tools         = learnedTools_(),
+grid_cells    = cells,
 }
 end
 
 function _touchAdd(zone, x, y)
 if zone.id == "add_recipe_action" then
 sysStatus = "MANUAL_CRAFT"
+if craftSubTab == "CRAFTER" then
+uiMessage = runCrafterSearch()
+else
 uiMessage = runMachineSearch()
+end
 sysStatus = "IDLE"
 pendingTouches = {}
 return true

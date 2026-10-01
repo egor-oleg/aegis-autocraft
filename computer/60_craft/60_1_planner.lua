@@ -38,6 +38,11 @@ function groupAvail(itemName, stock)
 end
 
 function clearLearn()
+	if learnedType == "crafter" then
+		-- result already drained to T.BOX by the scan. park the grid locked
+		pcall(crafterSetLock, true)
+		return
+	end
 	if learnedType ~= "turtle" then return end
 	if not (Config.train_box and Config.train_box ~= "") then return end
 	local tb = peripheral.wrap(Config.train_box)
@@ -203,7 +208,7 @@ function calcCraft(itemName, countNeed, stock, missing, blocked, craftPlan, visi
 	end
 	if allowPartial and not allOk then
 		local maxN = craftsCount
-		if recipe.type == "turtle" then
+		if recipe.type == "turtle" or recipe.type == "crafter" then
 			for ingName, ingPerCraft in pairs(ingCounts) do
 				if not toolSet[ingName] then
 					local ingAvail = groupAvail(ingName, stock)
@@ -253,7 +258,8 @@ function calcCraft(itemName, countNeed, stock, missing, blocked, craftPlan, visi
 			ingredients = recipe.ingredients,
 			output_count = recipe.output_count or 1,
 			output_device = recipe.output_device,
-			tools = recipe.tools
+			tools = recipe.tools,
+			grid_cells = recipe.grid_cells,
 		})
 	visited[itemName] = nil
 end

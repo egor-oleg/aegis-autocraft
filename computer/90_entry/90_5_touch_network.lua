@@ -33,6 +33,42 @@ function _touchNetwork(zone, x, y)
 		Config.turtles[zone.arg] = true
 		saveData()
 		return true
+	elseif zone.id == "crafter_set_clutch" or zone.id == "crafter_set_pulse" then
+		-- each tap walks to the next relay side, past the last side = untagged
+		local c = crafterCfg()
+		local key = (zone.id == "crafter_set_clutch") and "clutch" or "pulse"
+		local sideKey = key .. "_side"
+		local nextSide = RELAY_SIDES[1]
+		if c[key] == zone.arg and c[sideKey] then
+			nextSide = nil
+			for si, s in ipairs(RELAY_SIDES) do
+				if s == c[sideKey] then nextSide = RELAY_SIDES[si + 1]; break end
+			end
+		end
+		local r = peripheral.wrap(zone.arg)
+		-- old side goes quiet so it cant keep a clutch/crafter powered
+		if c[key] == zone.arg and c[sideKey] and r and r.setOutput then pcall(r.setOutput, c[sideKey], false) end
+		if nextSide then
+			c[key], c[sideKey] = zone.arg, nextSide
+			-- clutch starts engaged-safe: locked
+			if key == "clutch" then pcall(crafterSetLock, true) end
+		else
+			c[key], c[sideKey] = nil, nil
+		end
+		saveData()
+		return true
+	elseif zone.id == "crafter_set_out" then
+		local c = crafterCfg()
+		if c.out == zone.arg then
+			c.out = nil
+		else
+			c.out = zone.arg
+			-- output inv is a buffer, not stock. vault tag would let crafts pull from it
+			Config.storages[zone.arg] = nil
+			if Config.train_box == zone.arg then Config.train_box = nil end
+		end
+		saveData()
+		return true
 	end
 	return false
 end

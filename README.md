@@ -61,6 +61,24 @@ A.E.G.I.S. covers almost every mod, but there are exceptions - a few don't expos
 
 ---
 
+## Create Mechanical Crafters (+RECIPES → CRAFTER)
+
+Big Create recipes (up to 9x9, e.g. 5x5) run on a Mechanical Crafter grid.
+
+**Build:**
+- **Crafters** - put a wired modem on the back of every crafter and activate it. Leave crafter inputs **unconnected** (no wrench links), otherwise every modem sees the same combined inventory.
+- **Output** - point the chain's last crafter into a barrel and give that barrel its own modem. Tag it `[C.OUT]` in NETWORK. It must not be a VAULT or the T.BOX.
+- **Clutch relay** - drive the grid through a Clutch, powered by a Redstone Relay on the network. Tag the relay `[CLUTCH]`, and tap again to cycle through output sides. Relay ON disengages the clutch and locks the grid. Keep the relay from powering any crafter.
+- **Pulse relay (optional)** - a second relay touching any crafter. Tag it `[PULSE]`. Recipes with empty cells need it to start, unless every empty cell has a Crafter Slot Cover.
+
+**Teach:** press `DETECT GRID` and check that the lock shows `LOCKED`. Place the recipe into the crafters by hand, then `SCAN`. A.E.G.I.S. reads every cell and unlocks the grid. The finished item comes back from `[C.OUT]` to T.BOX.
+
+**Craft:** one craft at a time. For each craft A.E.G.I.S. locks the grid and checks it's empty. It confirms stock covers **every** cell before it pushes anything, since crafters are insert-only and a half-loaded grid can't be unloaded by the computer. Then it loads the grid, unlocks, pulses, and pulls the result from `[C.OUT]` into vaults. A recipe is tied to the exact crafter peripherals it was learned on, so re-learn it after rebuilding the grid. Crafter recipes are not exported to GitHub.
+
+**Cancel and recovery:** once the first item is in the grid, that craft can't be interrupted. `CANCEL` takes effect after it completes, so it never leaves half a recipe behind. If the grid still ends up part-loaded (load failure, reboot, chunk unload), the next crafter craft finishes the leftover first when it matches a known recipe. You can also use `[FINISH GRID]` in `+RECIPES → CRAFTER`. To clear the grid by hand, right-click each crafter's front with an empty hand.
+
+---
+
 ## Autocrafting
 
 <table border="0" cellspacing="0" cellpadding="8" style="border-collapse:collapse;border:0;background:transparent;">
